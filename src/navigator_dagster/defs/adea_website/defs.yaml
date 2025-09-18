@@ -1,0 +1,10 @@
+type: navigator_dagster.components.adea_website.AdeaWebsite
+
+attributes:
+  steps:
+    - url: https://programs.adea.org/PASS/programs
+      name: adea_pass_programs_website
+      collection_name: adea_pass_programs
+    - url: https://programs.adea.org/CAAPID/programs
+      name: adea_caapid_programs_website
+      collection_name: adea_caapid_programs

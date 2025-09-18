@@ -12,7 +12,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def scrape_adea_programs() -> List[Dict]:
+def scrape_adea_programs(url: str) -> List[Dict]:
     """Scrape ADEA PASS programs from the website and return structured data."""
     # Set up Chrome options for headless browsing
     chrome_options = Options()
@@ -28,7 +28,6 @@ def scrape_adea_programs() -> List[Dict]:
         driver = webdriver.Chrome(options=chrome_options)
 
         # Navigate to the ADEA PASS programs page
-        url = "https://programs.adea.org/PASS/programs"
         driver.get(url)
 
         # Wait for the page to load and wait for program cards to appear
