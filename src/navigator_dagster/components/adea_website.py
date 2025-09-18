@@ -7,6 +7,7 @@ class ETL(dg.Model):
     url: str
     name: str
     collection_name: str
+    description: str
 
 
 class AdeaWebsite(dg.Component, dg.Model, dg.Resolvable):
@@ -19,6 +20,7 @@ class AdeaWebsite(dg.Component, dg.Model, dg.Resolvable):
 
             @dg.asset(
                 name=etl.name,
+                description=etl.description,
             )
             def _collection(mongodb: MongoDBResource):
                 programs = scrape_adea_programs(etl.url)

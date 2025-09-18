@@ -4,7 +4,9 @@ attributes:
   steps:
     - url: https://programs.adea.org/PASS/programs
       name: adea_pass_programs_website
+      description: ADEA PASS programs website
       collection_name: adea_pass_programs
     - url: https://programs.adea.org/CAAPID/programs
       name: adea_caapid_programs_website
+      description: ADEA CAAPID programs website
       collection_name: adea_caapid_programs
