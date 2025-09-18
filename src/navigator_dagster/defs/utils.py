@@ -479,3 +479,396 @@ def extract_requirements(accordion_section) -> List[Dict]:
         logger.error(f"Error extracting requirements: {e}")
 
     return requirements
+
+
+def scrape_sdn_dental_schools(url: str) -> List[Dict]:
+    """Scrape Student Doctor Network dental schools from the website and return structured data."""
+    # Set up Chrome options for headless browsing
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--window-size=1920,1080")
+
+    driver = None
+    try:
+        # Initialize Chrome driver
+        driver = webdriver.Chrome(options=chrome_options)
+
+        # Navigate to the SDN dental schools page
+        driver.get(url)
+
+        # Wait for the page to load and wait for school container to appear
+        wait = WebDriverWait(driver, 20)
+        wait.until(EC.presence_of_element_located((By.ID, "schoolContainer")))
+
+        # Wait additional 5 seconds for all content to load
+        time.sleep(5)
+
+        # Get page source and parse with BeautifulSoup
+        page_source = driver.page_source
+        soup = BeautifulSoup(page_source, "html.parser")
+
+        # Find all school items
+        school_items = soup.find_all("div", class_="school-item")
+
+        schools = []
+        for item in school_items:
+            try:
+                school_data = extract_sdn_school_data(item)
+                if school_data:
+                    schools.append(school_data)
+            except Exception as e:
+                logger.error(f"Error extracting school data: {e}")
+                continue
+
+        return schools
+
+    except Exception as e:
+        logger.error(f"Error during SDN scraping: {e}")
+        return []
+    finally:
+        if driver:
+            driver.quit()
+
+
+def extract_sdn_school_data(item) -> Dict:
+    """Extract school data from a single school item and fetch detailed information."""
+    try:
+        if item is None:
+            return None
+
+        # Extract basic info from item
+        name_element = item.find("h3", class_="name")
+        name = ""
+        detail_url = ""
+
+        if name_element and name_element.find("a"):
+            name = name_element.find("a").text.strip()
+            detail_url = name_element.find("a").get("href")
+
+        # Extract location
+        location_element = item.find("p", class_="text-sm text-gray-600 mt-2")
+        location = location_element.text.strip() if location_element else ""
+        # Clean up newlines and extra whitespace
+        location = " ".join(location.split())
+
+        # Extract degree and type (currently not used in result)
+        # degree_type_element = item.find("p", class_="text-blue-600 font-medium")
+        # degree_type = degree_type_element.text.strip() if degree_type_element else ""
+
+        # Extract data attributes
+        data_degree = item.get("data-degree", "")
+        data_state = item.get("data-state", "")
+        data_type = item.get("data-type", "")
+        data_id = item.get("data-id", "")
+        data_country = item.get("data-country", "")
+
+        # Fetch detailed school information
+        detailed_info = fetch_sdn_detailed_school_info(detail_url)
+
+        # Merge basic info with detailed info
+        result = {
+            "name": name,
+            "location": location,
+            "state": detailed_info.get("state", ""),
+            "degree": data_degree,
+            "school_type": detailed_info.get("school_type", ""),
+            "detail_url": detail_url,
+            "data_attributes": {
+                "degree": data_degree,
+                "state": data_state,
+                "type": data_type,
+                "id": data_id,
+                "country": data_country,
+            },
+            "average_dat": detailed_info.get("average_dat", ""),
+            "average_gpa": detailed_info.get("average_gpa", ""),
+            "tuition_in_state": detailed_info.get("tuition_in_state", ""),
+            "tuition_out_of_state": detailed_info.get("tuition_out_of_state", ""),
+            "website": detailed_info.get("website", ""),
+            "interview_feedback_summary": detailed_info.get(
+                "interview_feedback_summary", ""
+            ),
+            "school_review_summary": detailed_info.get("school_review_summary", ""),
+            "common_secondary_essay_questions": detailed_info.get(
+                "common_secondary_essay_questions", []
+            ),
+            "about_the_school": detailed_info.get("about_the_school", ""),
+            "curriculum": detailed_info.get("curriculum", ""),
+            "facilities": detailed_info.get("facilities", ""),
+            "insights": detailed_info.get("insights", {}),
+            "school_address": detailed_info.get("school_address", ""),
+            "links": detailed_info.get("links", []),
+            "last_updated": detailed_info.get("last_updated", ""),
+        }
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error extracting SDN school data from item: {e}")
+        return None
+
+
+def fetch_sdn_detailed_school_info(detail_url: str) -> Dict:
+    """Fetch detailed school information from the school detail page."""
+    try:
+        if not detail_url:
+            return {}
+
+        # Make HTTP request to get detailed school page
+        response = requests.get(detail_url, timeout=30)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.content, "html.parser")
+
+        result = {
+            "state": "",
+            "school_type": "",
+            "average_dat": "",
+            "average_gpa": "",
+            "tuition_in_state": "",
+            "tuition_out_of_state": "",
+            "website": "",
+            "interview_feedback_summary": "",
+            "school_review_summary": "",
+            "common_secondary_essay_questions": [],
+            "about_the_school": "",
+            "curriculum": "",
+            "facilities": "",
+            "insights": {},
+            "school_address": "",
+            "links": [],
+            "last_updated": "",
+        }
+
+        # Extract location and state
+        location_element = soup.find("p", class_="text-green-600 font-semibold mt-4")
+        if location_element:
+            location_text = location_element.text.strip()
+            # Clean up newlines and extra whitespace
+            location_text = " ".join(location_text.split())
+            # Extract state from location (e.g., "Mesa, AZ" -> "AZ")
+            if "," in location_text:
+                result["state"] = location_text.split(",")[-1].strip()
+
+        # Extract school type
+        type_element = soup.find("div", class_="hidden md:flex gap-1")
+        if type_element:
+            school_type_text = type_element.text.strip()
+            # Clean up newlines and extra whitespace, then format properly
+            school_type_text = " ".join(school_type_text.split())
+            # Replace "|" with "," and clean up extra spaces around commas
+            school_type_text = school_type_text.replace("|", ",")
+            # Clean up any extra spaces around commas
+            school_type_text = ", ".join(
+                [part.strip() for part in school_type_text.split(",")]
+            )
+            result["school_type"] = school_type_text
+
+        # Extract school overview information
+        overview_section = soup.find("div", class_="p-4")
+        if overview_section:
+            paragraphs = overview_section.find_all("p")
+            for p in paragraphs:
+                text = p.get_text(strip=True)
+                if "Tuition (In State):" in text:
+                    result["tuition_in_state"] = text.replace(
+                        "Tuition (In State):", ""
+                    ).strip()
+                elif "Tuition (Out of State):" in text:
+                    result["tuition_out_of_state"] = text.replace(
+                        "Tuition (Out of State):", ""
+                    ).strip()
+                elif "Website:" in text:
+                    link = p.find("a", href=True)
+                    if link:
+                        result["website"] = link.get("href")
+
+        # Also check the school overview section more broadly
+        school_overview = soup.find("h3", string="School Overview")
+        if school_overview:
+            overview_div = school_overview.find_parent("div")
+            if overview_div:
+                paragraphs = overview_div.find_all("p")
+                for p in paragraphs:
+                    text = p.get_text(strip=True)
+                    if "Tuition (In State):" in text:
+                        result["tuition_in_state"] = text.replace(
+                            "Tuition (In State):", ""
+                        ).strip()
+                    elif "Tuition (Out of State):" in text:
+                        result["tuition_out_of_state"] = text.replace(
+                            "Tuition (Out of State):", ""
+                        ).strip()
+                    elif "Website:" in text:
+                        link = p.find("a", href=True)
+                        if link:
+                            result["website"] = link.get("href")
+
+        # Fallback: search for tuition and website anywhere in the document
+        if (
+            not result["tuition_in_state"]
+            or not result["tuition_out_of_state"]
+            or not result["website"]
+        ):
+            all_paragraphs = soup.find_all("p")
+            for p in all_paragraphs:
+                text = p.get_text(strip=True)
+                if "Tuition (In State):" in text and not result["tuition_in_state"]:
+                    result["tuition_in_state"] = text.replace(
+                        "Tuition (In State):", ""
+                    ).strip()
+                elif (
+                    "Tuition (Out of State):" in text
+                    and not result["tuition_out_of_state"]
+                ):
+                    result["tuition_out_of_state"] = text.replace(
+                        "Tuition (Out of State):", ""
+                    ).strip()
+                elif "Website:" in text and not result["website"]:
+                    link = p.find("a", href=True)
+                    if link:
+                        result["website"] = link.get("href")
+
+        # Extract application information
+        app_section = soup.find("div", class_="p-4 rounded-lg gap-4")
+        if app_section:
+            paragraphs = app_section.find_all("p")
+            for p in paragraphs:
+                text = p.get_text(strip=True)
+                if "Average DAT:" in text:
+                    result["average_dat"] = text.replace("Average DAT:", "").strip()
+                elif "Average GPA:" in text:
+                    result["average_gpa"] = text.replace("Average GPA:", "").strip()
+
+        # Extract interview feedback summary
+        interview_section = soup.find(
+            "div", class_="mt-6 p-4 bg-gray-100 rounded-lg flex flex-col"
+        )
+        if interview_section:
+            summary_p = interview_section.find("p", class_="text-gray-700 flex-1")
+            if summary_p:
+                result["interview_feedback_summary"] = summary_p.text.strip()
+
+        # Extract school review summary
+        review_sections = soup.find_all(
+            "div", class_="mt-6 p-4 bg-gray-100 rounded-lg flex flex-col"
+        )
+        if len(review_sections) > 1:
+            review_section = review_sections[1]
+            summary_p = review_section.find("p", class_="text-gray-700 flex-1")
+            if summary_p:
+                result["school_review_summary"] = summary_p.text.strip()
+
+        # Extract common secondary essay questions
+        essay_section = soup.find("div", class_="mt-6 p-4 bg-gray-100 rounded-lg")
+        if (
+            essay_section
+            and "Most Common Secondary Essay Questions" in essay_section.get_text()
+        ):
+            essay_list = essay_section.find(
+                "ul", class_="text-gray-700 text-sm space-y-2"
+            )
+            if essay_list:
+                questions = []
+                for li in essay_list.find_all("li"):
+                    question_text = li.get_text(strip=True)
+                    if question_text:
+                        # Remove the number prefix (e.g., "1. " -> "")
+                        if ". " in question_text:
+                            question_text = question_text.split(". ", 1)[1]
+                        questions.append(question_text)
+                result["common_secondary_essay_questions"] = questions
+
+        # Extract about the school, curriculum, and facilities
+        sections = soup.find_all("div", class_="mt-6 p-2")
+        for section in sections:
+            heading = section.find("h3", class_="text-lg font-semibold")
+            if heading:
+                heading_text = heading.text.strip()
+                content_p = section.find("p", class_="text-gray-700 break-words")
+                if content_p:
+                    content_text = content_p.text.strip()
+                    if heading_text == "About the School":
+                        result["about_the_school"] = content_text
+                    elif heading_text == "Curriculum":
+                        result["curriculum"] = content_text
+                    elif heading_text == "Facilities":
+                        result["facilities"] = content_text
+
+        # Extract insights
+        insights_section = soup.find(
+            "div", class_="bg-white p-2 md:p-6 rounded-lg shadow-md w-full"
+        )
+        if insights_section and "SDN Insights" in insights_section.get_text():
+            insights = {}
+            insight_items = insights_section.find_all("div", class_="flex items-start")
+            for item in insight_items:
+                text_content = item.get_text(strip=True)
+                if "Cost of Attendance:" in text_content:
+                    # Extract cost from the text
+                    cost_match = (
+                        text_content.split("Cost of Attendance:")[1].split()[0]
+                        if "Cost of Attendance:" in text_content
+                        else ""
+                    )
+                    insights["cost_of_attendance"] = cost_match
+                elif "Cost of Living:" in text_content:
+                    cost_living = (
+                        text_content.split("Cost of Living:")[1].strip()
+                        if "Cost of Living:" in text_content
+                        else ""
+                    )
+                    insights["cost_of_living"] = cost_living
+                elif "Environment:" in text_content:
+                    environment = (
+                        text_content.split("Environment:")[1].strip()
+                        if "Environment:" in text_content
+                        else ""
+                    )
+                    insights["environment"] = environment
+            result["insights"] = insights
+
+        # Extract school address
+        address_section = soup.find(
+            "div", class_="p-2 md:p-6 rounded-lg shadow-md w-full mb-4 mt-4"
+        )
+        if address_section and "School Address:" in address_section.get_text():
+            address_link = address_section.find("a", target="_blank")
+            if address_link:
+                address_text = address_link.text.strip()
+                # Clean up newlines and extra whitespace
+                result["school_address"] = " ".join(address_text.split())
+
+        # Extract links
+        links_section = soup.find(
+            "div", class_="bg-white p-2 md:p-6 rounded-lg shadow-md w-full mt-4"
+        )
+        if links_section and "Links" in links_section.get_text():
+            links = []
+            links_list = links_section.find(
+                "ul", class_="text-gray-700 text-sm space-y-1 mt-2"
+            )
+            if links_list:
+                for li in links_list.find_all("li"):
+                    link = li.find("a", href=True)
+                    if link:
+                        links.append(
+                            {"label": link.text.strip(), "url": link.get("href")}
+                        )
+            result["links"] = links
+
+        # Extract last updated
+        last_updated_p = soup.find("p", class_="mt-4 text-end")
+        if last_updated_p and "Last Updated:" in last_updated_p.get_text():
+            result["last_updated"] = (
+                last_updated_p.get_text().replace("Last Updated:", "").strip()
+            )
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error fetching detailed SDN school info from {detail_url}: {e}")
+        return {}

@@ -8,6 +8,9 @@ from src.navigator_dagster.defs.utils import (
     extract_program_info_table,
     extract_requirements,
     extract_international_eligibility_content,
+    scrape_sdn_dental_schools,
+    extract_sdn_school_data,
+    fetch_sdn_detailed_school_info,
 )
 
 
@@ -900,3 +903,960 @@ class TestUtilsParsing:
                 "Applicants are eligible to enroll if they are: US Citizen, US Permanent Resident, Non-US Citizen/Resident (program offers sponsorship), Only applicants who graduated, or plan to graduate with a DDS or DMD degree from a U.S. CODA accredited dental school will be considered for acceptance."
                 in intl_req["sections"]
             )
+
+
+class TestSDNScraping:
+    """Test SDN dental schools scraping functionality."""
+
+    @pytest.fixture
+    def sample_sdn_school_item_html(self):
+        """Sample SDN school item HTML for testing."""
+        return """
+        <div class="school-item flex border p-4 rounded-lg items-center space-x-4 mb-4" data-degree="DDS" data-state="4" data-type="1" data-id="189" data-country="US">
+            <a class="flex-shrink-0 w-24 h-24" href="https://www.studentdoctor.net/schools-database/school/detail/ATSU-ASDOH/a-t-still-university-arizona-school-of-dentistry-and-oral-health" aria-label="More about A. T. Still University - Arizona School of Dentistry and Oral Health">
+                <div class="school_img flex items-center justify-center">
+                    <img src="https://www.studentdoctor.net/schools-database/img/schools/ASDOH.jpg?v=2025-08-22 20:39:53" class="rounded-md object-contain" alt="A. T. Still University - Arizona School of Dentistry and Oral Health">
+                </div>
+            </a>
+            <div class="flex-1">
+                <h3 class="mt-2 font-semibold name">
+                    <a href="https://www.studentdoctor.net/schools-database/school/detail/ATSU-ASDOH/a-t-still-university-arizona-school-of-dentistry-and-oral-health" aria-label="More about A. T. Still University - Arizona School of Dentistry and Oral Health">A. T. Still University - Arizona School of Dentistry and Oral Health</a>
+                </h3>
+                <p class="text-sm text-gray-600 mt-2">
+                    Mesa, 
+                    AZ
+                </p>
+                <p class="text-blue-600 font-medium">DDS | Private</p>
+            </div>
+        </div>
+        """
+
+    @pytest.fixture
+    def sample_sdn_detailed_school_html(self):
+        """Sample SDN detailed school HTML for testing."""
+        return """
+        <div class="flex flex-wrap items-center gap-4">
+            <img class="w-32 md:w-40 object-cover rounded-xl" src="https://www.studentdoctor.net/schools-database/img/schools/ASDOH.jpg?v=2025-08-22 20:39:53" style="max-width: 150px" alt="A. T. Still University - Arizona School of Dentistry and Oral Health">
+            <h1 class="text-2xl sm:text-3xl md:text-4xl lg:text-5xl font-bold flex-1">
+                A. T. Still University - Arizona School of Dentistry and Oral Health
+            </h1>
+        </div>
+
+        <div class="flex flex-col md:flex-row w-full">
+            <div class="w-full md:w-[75%]">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-green-600 font-semibold mt-4">
+                            Mesa, 
+                            AZ
+                        </p>
+                        <div class="hidden md:flex gap-1">
+                            <div class="text-green-600 font-semibold">
+                                Dental Schools
+                                |
+                                Private Non-Profit
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="grid md:grid-cols-2 gap-4">
+                    <div class="p-4">
+                        <h3 class="text-2xl font-semibold border-b border-gray-300 mb-2">School Overview</h3>
+                        <p><strong>Tuition (In State):</strong> $96,960</p>
+                        <p><strong>Tuition (Out of State):</strong> $96,960</p>
+                        <p><strong>Accreditation Status:</strong> Approval</p>
+                        <p><strong>Acceptance Rate:</strong> N/A </p>
+                        <p><strong>Total Enrollment:</strong> 78 </p>
+                        <p><strong>Degrees:</strong> DDS </p>
+                        <p><strong>Founding Year:</strong> 2003  </p>
+                        <p><strong>Accreditation Year:</strong> 2007  </p>
+                        <p>
+                            <strong>Website:</strong>
+                            <span class="text-blue-500">
+                                <a target="_blank" href="https://www.atsu.edu/arizona-school-of-dentistry-and-oral-health" aria-label="More about A. T. Still University - Arizona School of Dentistry and Oral Health">
+                                    https://www.atsu.edu/arizona-school-of-dentistry-and-oral-health
+                                </a>
+                            </span>
+                        </p>
+                    </div>
+                    <div class="p-4 rounded-lg gap-4">
+                        <h3 class="text-2xl font-semibold border-b border-gray-300 mb-2">Application Information</h3>
+                        <p><strong>Average DAT:</strong> 19.5</p>
+                        <p><strong>Average GPA:</strong> 3.52</p>
+                        <p><strong>Male:</strong> N/A</p>
+                        <p><strong>Female:</strong> N/A</p>                       
+                    </div>
+                </div>
+                
+                <div class="grid md:grid-cols-2 gap-4">
+                    <div class="mt-6 p-4 bg-gray-100 rounded-lg flex flex-col">
+                        <h3 class="text-lg font-semibold mb-4">Interview Feedback Summary</h3>
+                        <p class="text-gray-700 flex-1">Overall, applicants ranked the school in the top 32% of interviews, indicating it is moderately regarded. They found the interview generally impressive with a moderate stress level and felt they did okay.</p>
+                    </div>
+                    <div class="mt-6 p-4 bg-gray-100 rounded-lg flex flex-col">
+                        <h3 class="text-lg font-semibold mb-4">School Review Summary</h3>
+                        <p class="text-gray-700 flex-1">Insufficient reviews to generate a summary. Add your review!</p>
+                    </div>
+                </div>
+                
+                <div class="mt-6 p-4 bg-gray-100 rounded-lg">
+                   <h2 class="text-gray-800 font-semibold text-lg">5 Most Common Secondary Essay Questions for ATSU-ASDOH</h2>
+                   <hr class="my-2 border-gray-300">
+                   <ul class="text-gray-700 text-sm space-y-2">
+                       <li><strong>1. Understanding and Commitment to Medicine</strong> – Describe your experiences with osteopathic physicians. Have you ever shadowed a DO? If not, please explain why. Do you have a letter of recommendation from a DO? If not, please explain why.</li>
+                       <li><strong>2. Motivation and Fit</strong> – What unique feature of SOMA appeals to you, and what specific feature of SOMA concerns you?</li>
+                       <li><strong>3. Personal Attributes and Characteristics</strong> – What do you consider your strongest attribute as a SOMA student, and what do you consider your weakest?</li>
+                       <li><strong>4. Community, Diversity, and Equity</strong> – How do you plan to engage with medically underserved populations in your medical career, and how have your past volunteer experiences shaped these plans?</li>
+                   </ul>
+               </div>
+               
+               <div class="mt-6 p-2">
+                   <h3 class="text-lg font-semibold">About the School</h3>
+                   <p class="text-gray-700 break-words">
+                       The Arizona School of Dentistry & Oral Health (ASDOH) prepares caring, technologically adept dental students to become community and educational leaders serving those in need. The school offers students an experience-rich learning environment where health professionals approach patient health as part of an interdisciplinary team.
+                   </p>
+               </div>
+               
+               <div class="mt-6 p-2">
+                   <h3 class="text-lg font-semibold">Curriculum</h3>
+                   <p class="text-gray-700 break-words">
+                       ASDOH students spend the first two years studying the basic sciences and clinical introductions in a classroom setting. Third-year students complete dental simulation exercises and work side by side with trained dentists in our campus clinic.
+                   </p>
+               </div>
+               
+               <div class="mt-6 p-2">
+                   <h3 class="text-lg font-semibold">Facilities</h3>
+                   <p class="text-gray-700 break-words">
+                       N/A
+                   </p>
+               </div>
+               
+               <p class="mt-4 text-end"><strong>Last Updated:</strong> Aug 22, 2025</p>
+            </div>
+            
+            <div class="w-full md:w-[35%] p-2 md:p-6">
+                <div class="bg-white p-2 md:p-6 rounded-lg shadow-md w-full">
+                    <h2 class="text-gray-700 font-semibold text-lg">SDN Insights</h2>
+                    <div class="mt-4 space-y-4">
+                        <div class="flex items-start">
+                            <span class="text-xl">💰</span>
+                            <div class="ml-3">
+                                <h3 class="text-blue-600 font-semibold">Cost of Attendance:
+                                    <a target="_blank" class="text-red-600 link link-hover" href="https://www.studentdoctor.net/student-loan-calculators/d/medical-school-student-loan-calculator/?avg_debt=$583,079&amp;payment_percent=25">$583,079</a>
+                                </h3>
+                            </div>
+                        </div>
+                        <div class="flex items-start">
+                            <span class="text-xl">⚖️</span>
+                            <div class="ml-3">
+                                <h3 class="text-red-600 font-semibold">Cost of Living: Lower than 99% Nationally</h3>
+                            </div>
+                        </div>
+                        <div class="flex items-start">
+                            <span class="text-xl">🌳</span>
+                            <div class="ml-3">
+                                <h3 class="text-green-600 font-semibold">Environment: Urban</h3>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="p-2 md:p-6 rounded-lg shadow-md w-full mb-4 mt-4" style="background: aliceblue">
+                    <p>
+                        <strong>School Address:</strong>
+                        <a target="_blank" href="https://www.google.com/maps/place/%2C+5850+E.+Still+Circle%2C+Mesa%2C+ARIZONA%2C+85206%2C+US" class="text-blue-500">
+                            5850 E. Still Circle, Mesa, AZ 85206
+                        </a>
+                    </p>
+                </div>
+                
+                <div class="bg-white p-2 md:p-6 rounded-lg shadow-md w-full mt-4">
+                    <h3 class="text-gray-800 font-semibold">Links</h3>
+                    <ul class="text-gray-700 text-sm space-y-1 mt-2">
+                        <li><a href="https://www.atsu.edu/arizona-school-of-dentistry-and-oral-health" target="_blank" class="text-blue-600 link link-hover">ATSU-ASDOH School Website</a></li>
+                        <li><a href="https://forums.studentdoctor.net/threads/asdoh-class-of-2030-interview-acceptance-thread.1508285/" target="_blank" class="text-blue-600 link link-hover">ATSU-ASDOH Current Cycle SDN Forum Thread</a></li>
+                        <li><a href="https://en.wikipedia.org/wiki/Arizona_School_of_Dentistry_and_Oral_Health" target="_blank" class="text-blue-600 link link-hover">Wikipedia</a></li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        """
+
+    def test_extract_sdn_school_data_basic_info(self, sample_sdn_school_item_html):
+        """Test extraction of basic school information from SDN school item."""
+        soup = BeautifulSoup(sample_sdn_school_item_html, "html.parser")
+        item = soup.find("div", class_="school-item")
+
+        with patch(
+            "src.navigator_dagster.defs.utils.fetch_sdn_detailed_school_info"
+        ) as mock_fetch:
+            mock_fetch.return_value = {}
+
+            result = extract_sdn_school_data(item)
+
+            assert result is not None
+            assert (
+                result["name"]
+                == "A. T. Still University - Arizona School of Dentistry and Oral Health"
+            )
+            assert result["location"] == "Mesa, AZ"
+            assert result["degree"] == "DDS"
+            assert (
+                result["detail_url"]
+                == "https://www.studentdoctor.net/schools-database/school/detail/ATSU-ASDOH/a-t-still-university-arizona-school-of-dentistry-and-oral-health"
+            )
+            assert result["data_attributes"]["degree"] == "DDS"
+            assert result["data_attributes"]["state"] == "4"
+            assert result["data_attributes"]["type"] == "1"
+            assert result["data_attributes"]["id"] == "189"
+            assert result["data_attributes"]["country"] == "US"
+
+    def test_fetch_sdn_detailed_school_info_basic_data(
+        self, sample_sdn_detailed_school_html
+    ):
+        """Test extraction of basic detailed school information."""
+        with patch("requests.get") as mock_get:
+            mock_response = Mock()
+            mock_response.content = sample_sdn_detailed_school_html.encode()
+            mock_response.raise_for_status.return_value = None
+            mock_get.return_value = mock_response
+
+            result = fetch_sdn_detailed_school_info(
+                "https://www.studentdoctor.net/schools-database/school/detail/ATSU-ASDOH/test"
+            )
+
+            assert result["state"] == "AZ"
+            assert result["school_type"] == "Dental Schools, Private Non-Profit"
+            assert result["tuition_in_state"] == "$96,960"
+            assert result["tuition_out_of_state"] == "$96,960"
+            assert (
+                result["website"]
+                == "https://www.atsu.edu/arizona-school-of-dentistry-and-oral-health"
+            )
+            assert result["average_dat"] == "19.5"
+            assert result["average_gpa"] == "3.52"
+
+    def test_fetch_sdn_detailed_school_info_feedback_summaries(
+        self, sample_sdn_detailed_school_html
+    ):
+        """Test extraction of interview and review feedback summaries."""
+        with patch("requests.get") as mock_get:
+            mock_response = Mock()
+            mock_response.content = sample_sdn_detailed_school_html.encode()
+            mock_response.raise_for_status.return_value = None
+            mock_get.return_value = mock_response
+
+            result = fetch_sdn_detailed_school_info(
+                "https://www.studentdoctor.net/schools-database/school/detail/ATSU-ASDOH/test"
+            )
+
+            assert (
+                "Overall, applicants ranked the school in the top 32% of interviews"
+                in result["interview_feedback_summary"]
+            )
+            assert (
+                result["school_review_summary"]
+                == "Insufficient reviews to generate a summary. Add your review!"
+            )
+
+    def test_fetch_sdn_detailed_school_info_essay_questions(
+        self, sample_sdn_detailed_school_html
+    ):
+        """Test extraction of common secondary essay questions."""
+        with patch("requests.get") as mock_get:
+            mock_response = Mock()
+            mock_response.content = sample_sdn_detailed_school_html.encode()
+            mock_response.raise_for_status.return_value = None
+            mock_get.return_value = mock_response
+
+            result = fetch_sdn_detailed_school_info(
+                "https://www.studentdoctor.net/schools-database/school/detail/ATSU-ASDOH/test"
+            )
+
+            questions = result["common_secondary_essay_questions"]
+            assert len(questions) == 4
+            assert (
+                "Understanding and Commitment to Medicine– Describe your experiences with osteopathic physicians"
+                in questions[0]
+            )
+            assert (
+                "Motivation and Fit– What unique feature of SOMA appeals to you"
+                in questions[1]
+            )
+            assert (
+                "Personal Attributes and Characteristics– What do you consider your strongest attribute"
+                in questions[2]
+            )
+            assert (
+                "Community, Diversity, and Equity– How do you plan to engage with medically underserved populations"
+                in questions[3]
+            )
+
+    def test_fetch_sdn_detailed_school_info_about_curriculum_facilities(
+        self, sample_sdn_detailed_school_html
+    ):
+        """Test extraction of about the school, curriculum, and facilities."""
+        with patch("requests.get") as mock_get:
+            mock_response = Mock()
+            mock_response.content = sample_sdn_detailed_school_html.encode()
+            mock_response.raise_for_status.return_value = None
+            mock_get.return_value = mock_response
+
+            result = fetch_sdn_detailed_school_info(
+                "https://www.studentdoctor.net/schools-database/school/detail/ATSU-ASDOH/test"
+            )
+
+            assert (
+                "The Arizona School of Dentistry & Oral Health (ASDOH) prepares caring"
+                in result["about_the_school"]
+            )
+            assert (
+                "ASDOH students spend the first two years studying the basic sciences"
+                in result["curriculum"]
+            )
+            assert result["facilities"] == "N/A"
+
+    def test_fetch_sdn_detailed_school_info_insights(
+        self, sample_sdn_detailed_school_html
+    ):
+        """Test extraction of SDN insights."""
+        with patch("requests.get") as mock_get:
+            mock_response = Mock()
+            mock_response.content = sample_sdn_detailed_school_html.encode()
+            mock_response.raise_for_status.return_value = None
+            mock_get.return_value = mock_response
+
+            result = fetch_sdn_detailed_school_info(
+                "https://www.studentdoctor.net/schools-database/school/detail/ATSU-ASDOH/test"
+            )
+
+            insights = result["insights"]
+            assert insights["cost_of_attendance"] == "$583,079"
+            assert insights["cost_of_living"] == "Lower than 99% Nationally"
+            assert insights["environment"] == "Urban"
+
+    def test_fetch_sdn_detailed_school_info_address_and_links(
+        self, sample_sdn_detailed_school_html
+    ):
+        """Test extraction of school address and links."""
+        with patch("requests.get") as mock_get:
+            mock_response = Mock()
+            mock_response.content = sample_sdn_detailed_school_html.encode()
+            mock_response.raise_for_status.return_value = None
+            mock_get.return_value = mock_response
+
+            result = fetch_sdn_detailed_school_info(
+                "https://www.studentdoctor.net/schools-database/school/detail/ATSU-ASDOH/test"
+            )
+
+            assert "5850 E. Still Circle, Mesa, AZ 85206" in result["school_address"]
+
+            links = result["links"]
+            assert len(links) == 3
+            assert links[0]["label"] == "ATSU-ASDOH School Website"
+            assert (
+                links[0]["url"]
+                == "https://www.atsu.edu/arizona-school-of-dentistry-and-oral-health"
+            )
+            assert links[1]["label"] == "ATSU-ASDOH Current Cycle SDN Forum Thread"
+            assert links[2]["label"] == "Wikipedia"
+
+    def test_fetch_sdn_detailed_school_info_last_updated(
+        self, sample_sdn_detailed_school_html
+    ):
+        """Test extraction of last updated date."""
+        with patch("requests.get") as mock_get:
+            mock_response = Mock()
+            mock_response.content = sample_sdn_detailed_school_html.encode()
+            mock_response.raise_for_status.return_value = None
+            mock_get.return_value = mock_response
+
+            result = fetch_sdn_detailed_school_info(
+                "https://www.studentdoctor.net/schools-database/school/detail/ATSU-ASDOH/test"
+            )
+
+            assert result["last_updated"] == "Aug 22, 2025"
+
+    def test_extract_sdn_school_data_integration(
+        self, sample_sdn_school_item_html, sample_sdn_detailed_school_html
+    ):
+        """Test complete integration of extract_sdn_school_data with detailed info."""
+        soup = BeautifulSoup(sample_sdn_school_item_html, "html.parser")
+        item = soup.find("div", class_="school-item")
+
+        with patch("requests.get") as mock_get:
+            mock_response = Mock()
+            mock_response.content = sample_sdn_detailed_school_html.encode()
+            mock_response.raise_for_status.return_value = None
+            mock_get.return_value = mock_response
+
+            result = extract_sdn_school_data(item)
+
+            # Test basic info
+            assert (
+                result["name"]
+                == "A. T. Still University - Arizona School of Dentistry and Oral Health"
+            )
+            assert result["location"] == "Mesa, AZ"
+            assert result["degree"] == "DDS"
+
+            # Test detailed info
+            assert result["state"] == "AZ"
+            assert result["average_dat"] == "19.5"
+            assert result["average_gpa"] == "3.52"
+            assert result["tuition_in_state"] == "$96,960"
+            assert result["tuition_out_of_state"] == "$96,960"
+            assert (
+                result["website"]
+                == "https://www.atsu.edu/arizona-school-of-dentistry-and-oral-health"
+            )
+
+            # Test feedback summaries
+            assert (
+                "Overall, applicants ranked the school in the top 32% of interviews"
+                in result["interview_feedback_summary"]
+            )
+            assert (
+                result["school_review_summary"]
+                == "Insufficient reviews to generate a summary. Add your review!"
+            )
+
+            # Test essay questions
+            assert len(result["common_secondary_essay_questions"]) == 4
+
+            # Test about/curriculum/facilities
+            assert (
+                "The Arizona School of Dentistry & Oral Health (ASDOH) prepares caring"
+                in result["about_the_school"]
+            )
+            assert (
+                "ASDOH students spend the first two years studying the basic sciences"
+                in result["curriculum"]
+            )
+            assert result["facilities"] == "N/A"
+
+            # Test insights
+            assert result["insights"]["cost_of_attendance"] == "$583,079"
+            assert result["insights"]["cost_of_living"] == "Lower than 99% Nationally"
+            assert result["insights"]["environment"] == "Urban"
+
+            # Test address and links
+            assert "5850 E. Still Circle, Mesa, AZ 85206" in result["school_address"]
+            assert len(result["links"]) == 3
+
+            # Test last updated
+            assert result["last_updated"] == "Aug 22, 2025"
+
+    def test_scrape_sdn_dental_schools_mock(self):
+        """Test the main scraping function with mocked webdriver."""
+        with patch("src.navigator_dagster.defs.utils.webdriver.Chrome") as mock_chrome:
+            # Mock the webdriver and its methods
+            mock_driver = Mock()
+            mock_chrome.return_value = mock_driver
+
+            # Mock page source with sample school items
+            sample_page_html = """
+            <div id="schoolContainer">
+                <div class="school-item flex border p-4 rounded-lg items-center space-x-4 mb-4" data-degree="DDS" data-state="4" data-type="1" data-id="189" data-country="US">
+                    <a class="flex-shrink-0 w-24 h-24" href="https://www.studentdoctor.net/schools-database/school/detail/ATSU-ASDOH/test">
+                        <div class="school_img flex items-center justify-center">
+                            <img src="test.jpg" class="rounded-md object-contain" alt="Test School">
+                        </div>
+                    </a>
+                    <div class="flex-1">
+                        <h3 class="mt-2 font-semibold name">
+                            <a href="https://www.studentdoctor.net/schools-database/school/detail/ATSU-ASDOH/test">Test School</a>
+                        </h3>
+                        <p class="text-sm text-gray-600 mt-2">Test City, TS</p>
+                        <p class="text-blue-600 font-medium">DDS | Private</p>
+                    </div>
+                </div>
+            </div>
+            """
+            mock_driver.page_source = sample_page_html
+
+            # Mock WebDriverWait
+            with patch("src.navigator_dagster.defs.utils.WebDriverWait") as mock_wait:
+                mock_wait_instance = Mock()
+                mock_wait.return_value = mock_wait_instance
+                mock_wait_instance.until.return_value = None
+
+                # Mock the detailed school info fetch
+                with patch(
+                    "src.navigator_dagster.defs.utils.fetch_sdn_detailed_school_info"
+                ) as mock_fetch:
+                    mock_fetch.return_value = {
+                        "state": "TS",
+                        "school_type": "Dental Schools | Private",
+                        "average_dat": "20.0",
+                        "average_gpa": "3.5",
+                        "tuition_in_state": "$100,000",
+                        "tuition_out_of_state": "$100,000",
+                        "website": "https://test.edu",
+                        "interview_feedback_summary": "Test feedback",
+                        "school_review_summary": "Test review",
+                        "common_secondary_essay_questions": ["Test question"],
+                        "about_the_school": "Test about",
+                        "curriculum": "Test curriculum",
+                        "facilities": "Test facilities",
+                        "insights": {"cost_of_attendance": "$500,000"},
+                        "school_address": "123 Test St, Test City, TS 12345",
+                        "links": [{"label": "Test Link", "url": "https://test.com"}],
+                        "last_updated": "Jan 1, 2025",
+                    }
+
+                    result = scrape_sdn_dental_schools("https://test.com")
+
+                    assert len(result) == 1
+                    school = result[0]
+                    assert school["name"] == "Test School"
+                    assert school["location"] == "Test City, TS"
+                    assert school["degree"] == "DDS"
+                    assert school["state"] == "TS"
+                    assert school["average_dat"] == "20.0"
+                    assert school["average_gpa"] == "3.5"
+
+    def test_extract_sdn_school_data_error_handling(self):
+        """Test error handling in extract_sdn_school_data."""
+        # Test with None input
+        result = extract_sdn_school_data(None)
+        assert result is None
+
+        # Test with empty item
+        soup = BeautifulSoup("<div></div>", "html.parser")
+        result = extract_sdn_school_data(soup)
+        assert result is not None
+        assert isinstance(result, dict)
+
+    def test_fetch_sdn_detailed_school_info_error_handling(self):
+        """Test error handling in fetch_sdn_detailed_school_info."""
+        # Test with empty URL
+        result = fetch_sdn_detailed_school_info("")
+        assert result == {}
+
+        # Test with HTTP error
+        with patch("requests.get") as mock_get:
+            mock_get.side_effect = Exception("HTTP Error")
+            result = fetch_sdn_detailed_school_info("https://test.com")
+            assert result == {}
+
+    def test_scrape_sdn_dental_schools_error_handling(self):
+        """Test error handling in scrape_sdn_dental_schools."""
+        with patch("src.navigator_dagster.defs.utils.webdriver.Chrome") as mock_chrome:
+            mock_chrome.side_effect = Exception("WebDriver Error")
+
+            result = scrape_sdn_dental_schools("https://test.com")
+            assert result == []
+
+    def test_extract_sdn_school_data_missing_elements(self):
+        """Test extraction when some elements are missing."""
+        html_missing_elements = """
+        <div class="school-item flex border p-4 rounded-lg items-center space-x-4 mb-4" data-degree="DDS" data-state="4" data-type="1" data-id="189" data-country="US">
+            <div class="flex-1">
+                <h3 class="mt-2 font-semibold name">
+                    <a href="https://www.studentdoctor.net/schools-database/school/detail/test">Test School</a>
+                </h3>
+            </div>
+        </div>
+        """
+
+        soup = BeautifulSoup(html_missing_elements, "html.parser")
+        item = soup.find("div", class_="school-item")
+
+        with patch(
+            "src.navigator_dagster.defs.utils.fetch_sdn_detailed_school_info"
+        ) as mock_fetch:
+            mock_fetch.return_value = {}
+
+            result = extract_sdn_school_data(item)
+
+            assert result is not None
+            assert result["name"] == "Test School"
+            assert result["location"] == ""
+            assert result["degree"] == "DDS"
+            assert (
+                result["detail_url"]
+                == "https://www.studentdoctor.net/schools-database/school/detail/test"
+            )
+
+    def test_fetch_sdn_detailed_school_info_missing_sections(self):
+        """Test extraction when some sections are missing from detailed page."""
+        html_missing_sections = """
+        <div class="flex flex-col md:flex-row w-full">
+            <div class="w-full md:w-[75%]">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-green-600 font-semibold mt-4">Test City, TS</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        """
+
+        with patch("requests.get") as mock_get:
+            mock_response = Mock()
+            mock_response.content = html_missing_sections.encode()
+            mock_response.raise_for_status.return_value = None
+            mock_get.return_value = mock_response
+
+            result = fetch_sdn_detailed_school_info("https://test.com")
+
+            # Should have empty values for missing sections
+            assert result["state"] == "TS"
+            assert result["school_type"] == ""
+            assert result["average_dat"] == ""
+            assert result["average_gpa"] == ""
+            assert result["tuition_in_state"] == ""
+            assert result["tuition_out_of_state"] == ""
+            assert result["website"] == ""
+            assert result["interview_feedback_summary"] == ""
+            assert result["school_review_summary"] == ""
+            assert result["common_secondary_essay_questions"] == []
+            assert result["about_the_school"] == ""
+            assert result["curriculum"] == ""
+            assert result["facilities"] == ""
+            assert result["insights"] == {}
+            assert result["school_address"] == ""
+            assert result["links"] == []
+            assert result["last_updated"] == ""
+
+    def test_location_parsing_cleans_newlines(self):
+        """Test that location parsing cleans up newlines and extra whitespace."""
+        html_with_newlines = """
+        <div class="school-item flex border p-4 rounded-lg items-center space-x-4 mb-4" data-degree="DDS" data-state="4" data-type="1" data-id="189" data-country="US">
+            <div class="flex-1">
+                <h3 class="mt-2 font-semibold name">
+                    <a href="https://www.studentdoctor.net/schools-database/school/detail/test">Test School</a>
+                </h3>
+                <p class="text-sm text-gray-600 mt-2">
+                    Mesa, 
+                    AZ
+                </p>
+            </div>
+        </div>
+        """
+
+        soup = BeautifulSoup(html_with_newlines, "html.parser")
+        item = soup.find("div", class_="school-item")
+
+        with patch(
+            "src.navigator_dagster.defs.utils.fetch_sdn_detailed_school_info"
+        ) as mock_fetch:
+            mock_fetch.return_value = {}
+
+            result = extract_sdn_school_data(item)
+
+            assert result["location"] == "Mesa, AZ"
+
+    def test_school_type_parsing_formats_correctly(self):
+        """Test that school type parsing formats correctly with commas instead of pipes."""
+        html_with_school_type = """
+        <div class="flex flex-col md:flex-row w-full">
+            <div class="w-full md:w-[75%]">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-green-600 font-semibold mt-4">Mesa, AZ</p>
+                        <div class="hidden md:flex gap-1">
+                            <div class="text-green-600 font-semibold">
+                                Dental Schools
+                                |
+                                Private Non-Profit
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        """
+
+        with patch("requests.get") as mock_get:
+            mock_response = Mock()
+            mock_response.content = html_with_school_type.encode()
+            mock_response.raise_for_status.return_value = None
+            mock_get.return_value = mock_response
+
+            result = fetch_sdn_detailed_school_info("https://test.com")
+
+            assert result["school_type"] == "Dental Schools, Private Non-Profit"
+
+    def test_school_address_parsing_cleans_newlines(self):
+        """Test that school address parsing cleans up newlines and extra whitespace."""
+        html_with_address = """
+        <div class="p-2 md:p-6 rounded-lg shadow-md w-full mb-4 mt-4" style="background: aliceblue">
+            <p>
+                <strong>School Address:</strong>
+                <a target="_blank" href="https://www.google.com/maps/place/test" class="text-blue-500">
+                    5850 E. Still Circle, 
+
+                    Mesa, 
+                    AZ 85206
+                </a>
+            </p>
+        </div>
+        """
+
+        with patch("requests.get") as mock_get:
+            mock_response = Mock()
+            mock_response.content = html_with_address.encode()
+            mock_response.raise_for_status.return_value = None
+            mock_get.return_value = mock_response
+
+            result = fetch_sdn_detailed_school_info("https://test.com")
+
+            assert result["school_address"] == "5850 E. Still Circle, Mesa, AZ 85206"
+
+    def test_location_state_extraction_cleans_newlines(self):
+        """Test that location and state extraction cleans up newlines in detailed page."""
+        html_with_location = """
+        <div class="flex flex-col md:flex-row w-full">
+            <div class="w-full md:w-[75%]">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-green-600 font-semibold mt-4">
+                            Mesa, 
+                            AZ
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        """
+
+        with patch("requests.get") as mock_get:
+            mock_response = Mock()
+            mock_response.content = html_with_location.encode()
+            mock_response.raise_for_status.return_value = None
+            mock_get.return_value = mock_response
+
+            result = fetch_sdn_detailed_school_info("https://test.com")
+
+            assert result["state"] == "AZ"
+
+    def test_website_extraction_works_correctly(self):
+        """Test that website extraction works correctly from school overview section."""
+        html_with_website = """
+        <div class="grid md:grid-cols-2 gap-4">
+            <div class="p-4">
+                <h3 class="text-2xl font-semibold border-b border-gray-300 mb-2">School Overview</h3>
+                <p>
+                    <strong>Website:</strong>
+                    <span class="text-blue-500">
+                        <a target="_blank" href="https://www.atsu.edu/arizona-school-of-dentistry-and-oral-health" aria-label="More about Test School">
+                            https://www.atsu.edu/arizona-school-of-dentistry-and-oral-health
+                        </a>
+                    </span>
+                </p>
+            </div>
+        </div>
+        """
+
+        with patch("requests.get") as mock_get:
+            mock_response = Mock()
+            mock_response.content = html_with_website.encode()
+            mock_response.raise_for_status.return_value = None
+            mock_get.return_value = mock_response
+
+            result = fetch_sdn_detailed_school_info("https://test.com")
+
+            assert (
+                result["website"]
+                == "https://www.atsu.edu/arizona-school-of-dentistry-and-oral-health"
+            )
+
+    def test_tuition_extraction_works_correctly(self):
+        """Test that tuition extraction works correctly for both in-state and out-of-state."""
+        html_with_tuition = """
+        <div class="grid md:grid-cols-2 gap-4">
+            <div class="p-4">
+                <h3 class="text-2xl font-semibold border-b border-gray-300 mb-2">School Overview</h3>
+                <p><strong>Tuition (In State):</strong> $96,960</p>
+                <p><strong>Tuition (Out of State):</strong> $96,960</p>
+            </div>
+        </div>
+        """
+
+        with patch("requests.get") as mock_get:
+            mock_response = Mock()
+            mock_response.content = html_with_tuition.encode()
+            mock_response.raise_for_status.return_value = None
+            mock_get.return_value = mock_response
+
+            result = fetch_sdn_detailed_school_info("https://test.com")
+
+            assert result["tuition_in_state"] == "$96,960"
+            assert result["tuition_out_of_state"] == "$96,960"
+
+    def test_integration_all_parsing_fixes(self):
+        """Test integration of all parsing fixes with the provided HTML example."""
+        # This test uses the exact HTML structure provided by the user
+        sample_html = """
+        <div class="flex flex-wrap items-center gap-4">
+            <img class="w-32 md:w-40 object-cover rounded-xl" src="https://www.studentdoctor.net/schools-database/img/schools/ASDOH.jpg?v=2025-08-22 20:39:53" style="max-width: 150px" alt="A. T. Still University - Arizona School of Dentistry and Oral Health">
+            <h1 class="text-2xl sm:text-3xl md:text-4xl lg:text-5xl font-bold flex-1">
+                A. T. Still University - Arizona School of Dentistry and Oral Health
+            </h1>
+        </div>
+
+        <div class="flex flex-col md:flex-row w-full">
+            <div class="w-full md:w-[75%]">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-green-600 font-semibold mt-4">
+                            Mesa, 
+                            AZ
+                        </p>
+                        <div class="hidden md:flex gap-1">
+                            <div class="text-green-600 font-semibold">
+                                Dental Schools
+                                |
+                                Private Non-Profit
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="grid md:grid-cols-2 gap-4">
+                    <div class="p-4">
+                        <h3 class="text-2xl font-semibold border-b border-gray-300 mb-2">School Overview</h3>
+                        <p><strong>Tuition (In State):</strong> $96,960</p>
+                        <p><strong>Tuition (Out of State):</strong> $96,960</p>
+                        <p>
+                            <strong>Website:</strong>
+                            <span class="text-blue-500">
+                                <a target="_blank" href="https://www.atsu.edu/arizona-school-of-dentistry-and-oral-health" aria-label="More about A. T. Still University - Arizona School of Dentistry and Oral Health">
+                                    https://www.atsu.edu/arizona-school-of-dentistry-and-oral-health
+                                </a>
+                            </span>
+                        </p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="w-full md:w-[35%] p-2 md:p-6">
+                <div class="p-2 md:p-6 rounded-lg shadow-md w-full mb-4 mt-4" style="background: aliceblue">
+                    <p>
+                        <strong>School Address:</strong>
+                        <a target="_blank" href="https://www.google.com/maps/place/%2C+5850+E.+Still+Circle%2C+Mesa%2C+ARIZONA%2C+85206%2C+US" class="text-blue-500">
+                            5850 E. Still Circle, 
+
+                            Mesa, 
+                            AZ 85206
+                        </a>
+                    </p>
+                </div>
+            </div>
+        </div>
+        """
+
+        with patch("requests.get") as mock_get:
+            mock_response = Mock()
+            mock_response.content = sample_html.encode()
+            mock_response.raise_for_status.return_value = None
+            mock_get.return_value = mock_response
+
+            result = fetch_sdn_detailed_school_info("https://test.com")
+
+            # Test all the fixes
+            assert result["state"] == "AZ"
+            assert result["school_type"] == "Dental Schools, Private Non-Profit"
+            assert result["tuition_in_state"] == "$96,960"
+            assert result["tuition_out_of_state"] == "$96,960"
+            assert (
+                result["website"]
+                == "https://www.atsu.edu/arizona-school-of-dentistry-and-oral-health"
+            )
+            assert result["school_address"] == "5850 E. Still Circle, Mesa, AZ 85206"
+
+    def test_real_html_structure_parsing(self):
+        """Test with the exact real HTML structure provided by the user."""
+        # This uses the exact HTML structure from the user's example
+        real_html = """
+        <div class="flex flex-col md:flex-row w-full">
+            <div class="w-full md:w-[75%]">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-green-600 font-semibold mt-4">
+                            Mesa, 
+                            AZ
+                        </p>
+                        <div class="hidden md:flex gap-1">
+                            <div class="text-green-600 font-semibold">
+                                Dental Schools
+                                |
+                                Private Non-Profit
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="grid md:grid-cols-2 gap-4">
+                    <div class="p-4">
+                        <h3 class="text-2xl font-semibold border-b border-gray-300 mb-2">School Overview</h3>
+                        <p><strong>Tuition (In State):</strong> $96,960</p>
+                        <p><strong>Tuition (Out of State):</strong> $96,960</p>
+                        <p><strong>Accreditation Status:</strong> Approval</p>
+                        <p><strong>Acceptance Rate:</strong> N/A </p>
+                        <p><strong>Total Enrollment:</strong> 78 </p>
+                        <p><strong>Degrees:</strong> DDS </p>
+                        <p><strong>Founding Year:</strong> 2003  </p>
+                        <p><strong>Accreditation Year:</strong> 2007  </p>
+                        <p>
+                            <strong>Website:</strong>
+                            <span class="text-blue-500">
+                                <a target="_blank" href="https://www.atsu.edu/arizona-school-of-dentistry-and-oral-health" aria-label="More about A. T. Still University - Arizona School of Dentistry and Oral Health">
+                                    https://www.atsu.edu/arizona-school-of-dentistry-and-oral-health
+                                </a>
+                            </span>
+                        </p>
+                    </div>
+                    <div class="p-4 rounded-lg gap-4">
+                        <h3 class="text-2xl font-semibold border-b border-gray-300 mb-2">Application Information</h3>
+                        <p><strong>Average DAT:</strong> 19.5</p>
+                        <p><strong>Average GPA:</strong> 3.52</p>
+                        <p><strong>Male:</strong> N/A</p>
+                        <p><strong>Female:</strong> N/A</p>                       
+                    </div>
+                </div>
+            </div>
+            
+            <div class="w-full md:w-[35%] p-2 md:p-6">
+                <div class="p-2 md:p-6 rounded-lg shadow-md w-full mb-4 mt-4" style="background: aliceblue">
+                    <p>
+                        <strong>School Address:</strong>
+                        <a target="_blank" href="https://www.google.com/maps/place/%2C+5850+E.+Still+Circle%2C+Mesa%2C+ARIZONA%2C+85206%2C+US" class="text-blue-500">
+                            5850 E. Still Circle, 
+
+                            Mesa, 
+                            AZ 85206
+                        </a>
+                    </p>
+                </div>
+            </div>
+        </div>
+        """
+
+        with patch("requests.get") as mock_get:
+            mock_response = Mock()
+            mock_response.content = real_html.encode()
+            mock_response.raise_for_status.return_value = None
+            mock_get.return_value = mock_response
+
+            result = fetch_sdn_detailed_school_info("https://test.com")
+
+            # Test that all the problematic fields are now correctly extracted
+            assert result["state"] == "AZ"
+            assert result["school_type"] == "Dental Schools, Private Non-Profit"
+            assert result["tuition_in_state"] == "$96,960", (
+                f"Expected '$96,960', got '{result['tuition_in_state']}'"
+            )
+            assert result["tuition_out_of_state"] == "$96,960", (
+                f"Expected '$96,960', got '{result['tuition_out_of_state']}'"
+            )
+            assert (
+                result["website"]
+                == "https://www.atsu.edu/arizona-school-of-dentistry-and-oral-health"
+            ), f"Expected website URL, got '{result['website']}'"
+            assert result["school_address"] == "5850 E. Still Circle, Mesa, AZ 85206"
+            assert result["average_dat"] == "19.5"
+            assert result["average_gpa"] == "3.52"

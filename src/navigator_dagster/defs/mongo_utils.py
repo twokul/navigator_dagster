@@ -149,3 +149,69 @@ def get_dental_programs_by_type(
     except Exception as e:
         logger.error(f"Error getting dental programs by type {program_type}: {e}")
         return []
+
+
+def create_sdn_dental_schools_collection(mongodb: MongoDBResource, schools_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Create a new MongoDB collection called 'sdn_dental_schools' from scraped SDN data.
+
+    Args:
+        mongodb: MongoDB resource instance
+        schools_data: List of school data dictionaries from SDN scraping
+
+    Returns:
+        Dict containing the operation result with status, message, and count
+    """
+    try:
+        # Get the target collection
+        sdn_collection = mongodb.get_collection("sdn_dental_schools")
+
+        # Clear existing data in the target collection
+        sdn_collection.delete_many({})
+
+        # Insert school data into the collection
+        if schools_data:
+            result = sdn_collection.insert_many(schools_data)
+
+            logger.info(
+                f"Successfully created sdn_dental_schools collection with {len(schools_data)} schools"
+            )
+
+            return {
+                "status": "success",
+                "message": f"Successfully created sdn_dental_schools collection with {len(schools_data)} schools",
+                "count": len(schools_data),
+                "inserted_ids": len(result.inserted_ids),
+            }
+        else:
+            logger.warning("No SDN schools found to insert")
+            return {
+                "status": "error",
+                "message": "No SDN schools found to insert",
+                "count": 0,
+                "inserted_ids": 0,
+            }
+
+    except Exception as e:
+        logger.error(f"Error creating sdn_dental_schools collection: {e}")
+        return {
+            "status": "error",
+            "message": f"Error creating sdn_dental_schools collection: {str(e)}",
+            "count": 0,
+            "inserted_ids": 0,
+        }
+
+
+def get_sdn_dental_schools_count(mongodb: MongoDBResource) -> int:
+    """
+    Get the count of schools in the sdn_dental_schools collection.
+
+    Returns:
+        int: Number of schools in the collection
+    """
+    try:
+        collection = mongodb.get_collection("sdn_dental_schools")
+        return collection.count_documents({})
+    except Exception as e:
+        logger.error(f"Error getting sdn_dental_schools count: {e}")
+        return 0
