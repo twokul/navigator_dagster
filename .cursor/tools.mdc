@@ -1,0 +1,13 @@
+---
+description: Tools for the Navigator Dagster project
+globs:
+alwaysApply: true
+---
+
+## Linting & Formatting
+
+Use ruff to lint the code and format the code.
+
+## Running Code Locally
+
+Use `uv` to run the project.

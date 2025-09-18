@@ -349,8 +349,6 @@ class TestUtilsParsing:
         self, sample_detailed_program_html
     ):
         """Test extraction of last updated date."""
-        soup = BeautifulSoup(sample_detailed_program_html, "html.parser")
-
         with patch("requests.get") as mock_get:
             mock_response = Mock()
             mock_response.content = sample_detailed_program_html.encode()
@@ -365,8 +363,6 @@ class TestUtilsParsing:
         self, sample_detailed_program_html
     ):
         """Test extraction of website URL from header."""
-        soup = BeautifulSoup(sample_detailed_program_html, "html.parser")
-
         with patch("requests.get") as mock_get:
             mock_response = Mock()
             mock_response.content = sample_detailed_program_html.encode()
@@ -384,8 +380,6 @@ class TestUtilsParsing:
         self, sample_detailed_program_html
     ):
         """Test extraction of program description."""
-        soup = BeautifulSoup(sample_detailed_program_html, "html.parser")
-
         with patch("requests.get") as mock_get:
             mock_response = Mock()
             mock_response.content = sample_detailed_program_html.encode()
@@ -524,8 +518,6 @@ class TestUtilsParsing:
         self, sample_detailed_program_html
     ):
         """Test extraction of interview schedule and additional information."""
-        soup = BeautifulSoup(sample_detailed_program_html, "html.parser")
-
         with patch("requests.get") as mock_get:
             mock_response = Mock()
             mock_response.content = sample_detailed_program_html.encode()

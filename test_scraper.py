@@ -5,7 +5,6 @@ This script tests the scraping functionality without requiring Dagster.
 """
 
 import sys
-import os
 
 sys.path.append("src")
 

@@ -151,7 +151,9 @@ def get_dental_programs_by_type(
         return []
 
 
-def create_sdn_dental_schools_collection(mongodb: MongoDBResource, schools_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+def create_sdn_dental_schools_collection(
+    mongodb: MongoDBResource, schools_data: List[Dict[str, Any]]
+) -> Dict[str, Any]:
     """
     Create a new MongoDB collection called 'sdn_dental_schools' from scraped SDN data.
 
