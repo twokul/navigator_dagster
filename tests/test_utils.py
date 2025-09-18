@@ -7,6 +7,7 @@ from src.navigator_dagster.defs.utils import (
     extract_contact_info,
     extract_program_info_table,
     extract_requirements,
+    extract_international_eligibility_content,
 )
 
 
@@ -335,8 +336,9 @@ class TestUtilsParsing:
                 result["adea_url"]
                 == "https://programs.adea.org/PASS/programs/illinois-masonic-medical-center-anesthesiology"
             )
-            assert result["size"] == 2
-            assert result["length"] == 36
+            # Size and length are now only in information object
+            assert "size" not in result
+            assert "length" not in result
             assert result["application_deadline"] == "October 1"
             assert result["start_date"] == "July 1"
 
@@ -418,7 +420,7 @@ class TestUtilsParsing:
 
         # Test first contact person
         contact1 = result["points_of_contact"][0]
-        assert contact1["name"] == "Kenneth Kromash  DDS"
+        assert contact1["name"] == "Kenneth Kromash DDS"  # Extra spaces cleaned
         assert contact1["title"] == "Program Director"
         assert contact1["email"] == "kenneth.kromash@aah.org"
         assert contact1["phone"] == "773-871-6138"
@@ -510,9 +512,10 @@ class TestUtilsParsing:
             "This program will consider applicants who graduated, or plan to graduate, from anon-CODA accredited dental school: No"
             in req5["sections"][0]
         )
-        assert "US Citizen" in req5["sections"]
-        assert "US Permanent Resident" in req5["sections"]
-        assert "Canadian Citizen" in req5["sections"]
+        # The list items are now combined into a single section
+        assert "US Citizen" in req5["sections"][1]
+        assert "US Permanent Resident" in req5["sections"][1]
+        assert "Canadian Citizen" in req5["sections"][1]
 
     def test_fetch_detailed_program_info_interview_schedule(
         self, sample_detailed_program_html
@@ -578,8 +581,9 @@ class TestUtilsParsing:
             assert result["name"] == "Advocate Illinois Masonic Medical Center"
             assert result["state"] == "Illinois"
             assert result["type"] == "Anesthesiology"
-            assert result["size"] == 2
-            assert result["length"] == 36
+            # Size and length are now only in information object
+            assert "size" not in result
+            assert "length" not in result
 
             # Test detailed info
             assert result["last_updated"] == "Last updated on May 1, 2025."
@@ -666,3 +670,233 @@ class TestUtilsParsing:
         soup = BeautifulSoup("<div></div>", "html.parser")
         result = extract_requirements(soup)
         assert result == []
+
+    def test_extract_program_data_no_redundant_size_length(
+        self, sample_program_card_html
+    ):
+        """Test that size and length are not included at root level."""
+        soup = BeautifulSoup(sample_program_card_html, "html.parser")
+        card = soup.find("article", class_="adea-pgrm")
+
+        with patch(
+            "src.navigator_dagster.defs.utils.fetch_detailed_program_info"
+        ) as mock_fetch:
+            mock_fetch.return_value = {
+                "information": {
+                    "size": "2",
+                    "length": "36 months",
+                    "program_size": "2",
+                    "program_length": "36 months",
+                }
+            }
+
+            result = extract_program_data(card)
+
+            # Check that size and length are NOT at root level
+            assert "size" not in result
+            assert "length" not in result
+
+            # Check that they exist in information object
+            assert "information" in result
+            assert "size" in result["information"]
+            assert "length" in result["information"]
+
+    def test_extract_contact_info_cleans_tab_characters(self):
+        """Test that contact names have tab characters removed."""
+        html_with_tabs = """
+        <div class="adea-pgrm-dtl-contact">
+            <div class="adea-pgrm-dtl-contact__name">
+                <span><strong>Dr.  Marissa Rubenstein\n\t\t\t\t\t\t\t\t\t\t\t\t\t DMD</strong></span>
+                <span>Program Director</span>
+            </div>
+            <div class="adea-pgrm-dtl-contact__actions">
+                <span>
+                    <a href="mailto:marissa.rubenstein@jefferson.edu">marissa.rubenstein@jefferson.edu</a>
+                </span>
+                <span>
+                    <a href="tel:215-481-2193">215-481-2193</a>
+                </span>
+            </div>
+        </div>
+        """
+
+        soup = BeautifulSoup(html_with_tabs, "html.parser")
+        contact_element = soup.find("div", class_="adea-pgrm-dtl-contact")
+
+        result = extract_contact_info(contact_element)
+
+        assert len(result["points_of_contact"]) == 1
+        contact = result["points_of_contact"][0]
+        assert contact["name"] == "Dr. Marissa Rubenstein DMD"
+        assert contact["title"] == "Program Director"
+        assert contact["email"] == "marissa.rubenstein@jefferson.edu"
+        assert contact["phone"] == "215-481-2193"
+
+    def test_extract_international_eligibility_content_collapses_sections(self):
+        """Test that International Student Eligibility content is properly collapsed."""
+        html_content = """
+        <div>
+            <p>This program will consider applicants who graduated, or plan to graduate, from a non-CODA accredited dental school: No</p>
+            <p>Applicants are eligible to enroll if they are:</p>
+            <ul>
+                <li>US Citizen</li>
+                <li>US Permanent Resident</li>
+                <li>Non-US Citizen/Resident (program offers sponsorship)</li>
+                <li>Only applicants who graduated, or plan to graduate with a DDS or DMD degree from a U.S. CODA accredited dental school will be considered for acceptance.</li>
+            </ul>
+        </div>
+        """
+
+        soup = BeautifulSoup(html_content, "html.parser")
+        result = extract_international_eligibility_content(soup)
+
+        # Should have 2 sections: the first paragraph and the combined intro + list
+        assert len(result) == 2
+        assert (
+            "This program will consider applicants who graduated, or plan to graduate, from a non-CODA accredited dental school: No"
+            in result
+        )
+        assert (
+            "Applicants are eligible to enroll if they are: US Citizen, US Permanent Resident, Non-US Citizen/Resident (program offers sponsorship), Only applicants who graduated, or plan to graduate with a DDS or DMD degree from a U.S. CODA accredited dental school will be considered for acceptance."
+            in result
+        )
+
+    def test_extract_requirements_international_eligibility_special_handling(self):
+        """Test that International Student Eligibility gets special handling in requirements extraction."""
+        html_accordion = """
+        <div class="adea-pgrm-dtl__section--accordions">
+            <div class="adea-pgrm-accordion">
+                <h3 class="adea-pgrm-accordion__heading">International Student Eligibility</h3>
+                <div class="adea-pgrm-accordion__content">
+                    <p>This program will consider applicants who graduated, or plan to graduate, from a non-CODA accredited dental school: No</p>
+                    <p>Applicants are eligible to enroll if they are:</p>
+                    <ul>
+                        <li>US Citizen</li>
+                        <li>US Permanent Resident</li>
+                        <li>Non-US Citizen/Resident (program offers sponsorship)</li>
+                        <li>Only applicants who graduated, or plan to graduate with a DDS or DMD degree from a U.S. CODA accredited dental school will be considered for acceptance.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        """
+
+        soup = BeautifulSoup(html_accordion, "html.parser")
+        accordion_section = soup.find(
+            "div", class_="adea-pgrm-dtl__section--accordions"
+        )
+
+        result = extract_requirements(accordion_section)
+
+        assert len(result) == 1
+        req = result[0]
+        assert req["title"] == "International Student Eligibility"
+        assert len(req["sections"]) == 2
+        assert (
+            "This program will consider applicants who graduated, or plan to graduate, from a non-CODA accredited dental school: No"
+            in req["sections"]
+        )
+        assert (
+            "Applicants are eligible to enroll if they are: US Citizen, US Permanent Resident, Non-US Citizen/Resident (program offers sponsorship), Only applicants who graduated, or plan to graduate with a DDS or DMD degree from a U.S. CODA accredited dental school will be considered for acceptance."
+            in req["sections"]
+        )
+
+    def test_extract_international_eligibility_content_error_handling(self):
+        """Test error handling in extract_international_eligibility_content."""
+        # Test with None input
+        result = extract_international_eligibility_content(None)
+        assert result == []
+
+        # Test with empty content
+        soup = BeautifulSoup("<div></div>", "html.parser")
+        result = extract_international_eligibility_content(soup)
+        assert result == []
+
+    def test_integration_all_fixes(self, sample_program_card_html):
+        """Test integration of all fixes together."""
+        soup = BeautifulSoup(sample_program_card_html, "html.parser")
+        card = soup.find("article", class_="adea-pgrm")
+
+        # Mock detailed info with the problematic data from the user's example
+        mock_detailed_info = {
+            "last_updated": "Last updated on August 30, 2024.",
+            "description": "The Jefferson Abington Dental Residency Program is a comprehensive 1 year experience...",
+            "website_url": "https://www.jeffersonhealth.org/about-us/academic-programs/graduate-medical-education/residency-programs/dentistry-residency-program",
+            "information": {
+                "size": "4",
+                "length": "12 months",
+                "program_size": "4",
+                "program_length": "12 months",
+                "application_deadline": "November 1",
+                "program_start_date": "June 24",
+                "program_type": "General Practice Residency",
+                "program_code": "GPR654",
+                "degrees_offered": "Certificate",
+                "supplemental_application": "no",
+                "supplemental_fee": "no",
+                "stipend_offered": "yes",
+                "match_participating": "yes",
+                "program_website": "https://www.jeffersonhealth.org/about-us/academic-programs/graduate-medical-education/residency-programs/dentistry-residency-program",
+            },
+            "requirements": [
+                {
+                    "title": "Required Standardized Tests",
+                    "sections": [
+                        "INBDE",
+                        "Passing the INBDE before matriculation into the advanced dental education program",
+                    ],
+                },
+                {
+                    "title": "International Student Eligibility",
+                    "sections": [
+                        "This program will consider applicants who graduated, or plan to graduate, from anon-CODA accredited dental school: No",
+                        "Applicants are eligible to enroll if they are: US Citizen, US Permanent Resident, Non-US Citizen/Resident (program offers sponsorship), Only applicants who graduated, or plan to graduate with a DDS or DMD degree from a U.S. CODA accredited dental school will be considered for acceptance.",
+                    ],
+                },
+            ],
+            "contact": {
+                "points_of_contact": [
+                    {
+                        "name": "Dr. Marissa Rubenstein DMD",
+                        "title": "Program Director",
+                        "email": "marissa.rubenstein@jefferson.edu",
+                        "phone": "215-481-2193",
+                    }
+                ],
+                "address": "Abington Memorial Hospital, 1200 Old York Rd., Dental Div./GR Fl. Arches , Abington, Pennsylvania, 19001",
+            },
+        }
+
+        with patch(
+            "src.navigator_dagster.defs.utils.fetch_detailed_program_info"
+        ) as mock_fetch:
+            mock_fetch.return_value = mock_detailed_info
+
+            result = extract_program_data(card)
+
+            # Test 1: No redundant size/length at root level
+            assert "size" not in result
+            assert "length" not in result
+            assert "size" in result["information"]
+            assert "length" in result["information"]
+
+            # Test 2: Contact name is clean (no tabs)
+            contact = result["contact"]["points_of_contact"][0]
+            assert contact["name"] == "Dr. Marissa Rubenstein DMD"
+            assert "\t" not in contact["name"]
+
+            # Test 3: International Student Eligibility is properly collapsed
+            intl_req = next(
+                (
+                    req
+                    for req in result["requirements"]
+                    if req["title"] == "International Student Eligibility"
+                ),
+                None,
+            )
+            assert intl_req is not None
+            assert len(intl_req["sections"]) == 2
+            assert (
+                "Applicants are eligible to enroll if they are: US Citizen, US Permanent Resident, Non-US Citizen/Resident (program offers sponsorship), Only applicants who graduated, or plan to graduate with a DDS or DMD degree from a U.S. CODA accredited dental school will be considered for acceptance."
+                in intl_req["sections"]
+            )

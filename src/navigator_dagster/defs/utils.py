@@ -104,8 +104,6 @@ def extract_program_data(card) -> Dict:
 
         # Extract basic program details from the info table
         info_table = card.find("div", class_="adea-pgrm__info")
-        size = ""
-        length = ""
         application_deadline = ""
         start_date = ""
 
@@ -119,11 +117,7 @@ def extract_program_data(card) -> Dict:
                     header_text = header.text.strip()
                     value_text = value.text.strip()
 
-                    if header_text == "Program Size":
-                        size = value_text
-                    elif header_text == "Program Length":
-                        length = value_text
-                    elif header_text == "Application Deadline":
+                    if header_text == "Application Deadline":
                         application_deadline = value_text
                     elif header_text == "Program Start":
                         start_date = value_text
@@ -138,10 +132,6 @@ def extract_program_data(card) -> Dict:
             "type": program_type,
             "url": detailed_info.get("website_url", ""),
             "adea_url": adea_url,
-            "size": int(size) if size.isdigit() else size,
-            "length": int(length.split()[0])
-            if length and length.split()[0].isdigit()
-            else length,
             "application_deadline": application_deadline,
             "start_date": start_date,
             "last_updated": detailed_info.get("last_updated", ""),
@@ -290,6 +280,57 @@ def fetch_detailed_program_info(adea_url: str) -> Dict:
         return {}
 
 
+def extract_international_eligibility_content(content) -> List[str]:
+    """Extract and format International Student Eligibility content into a single section."""
+    sections = []
+
+    try:
+        # Extract paragraphs first
+        paragraphs = content.find_all("p")
+        for p in paragraphs:
+            text = p.get_text(strip=True)
+            if text:
+                # Clean up extra whitespace and special characters
+                text = " ".join(text.split())
+                sections.append(text)
+
+        # Extract list items and format them properly
+        lists = content.find_all("ul")
+        for ul in lists:
+            items = ul.find_all("li")
+            if items:
+                # Check if there's a preceding paragraph that introduces the list
+                list_items = []
+                for li in items:
+                    text = li.get_text(strip=True)
+                    if text:
+                        text = " ".join(text.split())
+                        list_items.append(text)
+
+                # If we have list items, format them as a single sentence
+                if list_items:
+                    # Find the paragraph that introduces the list (usually ends with ":")
+                    intro_paragraph = None
+                    for section in sections:
+                        if section.endswith(":"):
+                            intro_paragraph = section
+                            break
+
+                    if intro_paragraph:
+                        # Remove the intro paragraph from sections and combine with list
+                        sections = [s for s in sections if s != intro_paragraph]
+                        combined_text = f"{intro_paragraph} {', '.join(list_items)}"
+                        sections.append(combined_text)
+                    else:
+                        # If no intro paragraph, just add the list items
+                        sections.extend(list_items)
+
+    except Exception as e:
+        logger.error(f"Error extracting international eligibility content: {e}")
+
+    return sections
+
+
 def extract_contact_info(contact_element) -> Dict:
     """Extract contact information from contact section."""
     contact_info = {"points_of_contact": [], "address": ""}
@@ -326,6 +367,9 @@ def extract_contact_info(contact_element) -> Dict:
                     contact_person["name"] = full_text[:title_index].strip()
                 else:
                     contact_person["name"] = name_parts[0].get_text(strip=True)
+
+                # Clean up tab characters and extra whitespace from name
+                contact_person["name"] = " ".join(contact_person["name"].split())
                 contact_person["title"] = title_text
 
             # Extract email and phone from corresponding actions element
@@ -405,6 +449,9 @@ def extract_requirements(accordion_section) -> List[Dict]:
                         text = check.get_text(strip=True)
                         if text:
                             sections.append(text)
+                elif "International Student Eligibility" in title:
+                    # Special handling for International Student Eligibility
+                    sections = extract_international_eligibility_content(content)
                 else:
                     # Extract paragraphs and lists
                     paragraphs = content.find_all("p")
