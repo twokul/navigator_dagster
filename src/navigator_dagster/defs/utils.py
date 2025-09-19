@@ -8,12 +8,18 @@ import time
 import requests
 from typing import List, Dict
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dagster import get_dagster_logger
 
 logger = logging.getLogger(__name__)
 
 
 def scrape_adea_programs(url: str) -> List[Dict]:
     """Scrape ADEA PASS programs from the website and return structured data."""
+    dagster_logger = get_dagster_logger()
+
+    dagster_logger.info(f"Starting ADEA programs scraping from: {url}")
+
     # Set up Chrome options for headless browsing
     chrome_options = Options()
     chrome_options.add_argument("--headless")
@@ -25,45 +31,225 @@ def scrape_adea_programs(url: str) -> List[Dict]:
     driver = None
     try:
         # Initialize Chrome driver
+        dagster_logger.info("Initializing Chrome driver...")
         driver = webdriver.Chrome(options=chrome_options)
+        dagster_logger.info("Chrome driver initialized successfully")
 
         # Navigate to the ADEA PASS programs page
+        dagster_logger.info(f"Navigating to: {url}")
         driver.get(url)
 
         # Wait for the page to load and wait for program cards to appear
+        dagster_logger.info("Waiting for program cards to load...")
         wait = WebDriverWait(driver, 20)
         wait.until(
             EC.presence_of_element_located((By.CLASS_NAME, "adea-program-cards"))
         )
+        dagster_logger.info("Program cards container found")
 
         # Wait additional 5 seconds for all content to load
+        dagster_logger.info("Waiting additional 5 seconds for content to load...")
         time.sleep(5)
 
         # Get page source and parse with BeautifulSoup
+        dagster_logger.info("Parsing page content...")
         page_source = driver.page_source
         soup = BeautifulSoup(page_source, "html.parser")
 
         # Find all program cards
         program_cards = soup.find_all("article", class_="adea-pgrm")
+        dagster_logger.info(f"Found {len(program_cards)} program cards on the page")
 
-        programs = []
-        for card in program_cards:
+        # Extract basic info first (without detailed fetching)
+        dagster_logger.info("Extracting basic program information...")
+        basic_programs = []
+        for i, card in enumerate(program_cards):
             try:
-                program_data = extract_program_data(card)
+                program_data = extract_program_data_basic(card)
                 if program_data:
-                    programs.append(program_data)
+                    basic_programs.append(program_data)
+                    if (i + 1) % 100 == 0:
+                        dagster_logger.info(
+                            f"Processed {i + 1}/{len(program_cards)} basic program cards"
+                        )
             except Exception as e:
-                logger.error(f"Error extracting program data: {e}")
+                dagster_logger.error(
+                    f"Error extracting basic program data for card {i}: {e}"
+                )
                 continue
 
+        dagster_logger.info(
+            f"Successfully extracted basic info for {len(basic_programs)} programs"
+        )
+
+        # Now fetch detailed information concurrently
+        dagster_logger.info("Starting concurrent detailed information fetching...")
+        programs = fetch_detailed_info_concurrent(basic_programs)
+
+        dagster_logger.info(
+            f"Scraping completed successfully. Total programs: {len(programs)}"
+        )
         return programs
 
     except Exception as e:
-        logger.error(f"Error during scraping: {e}")
+        dagster_logger.error(f"Error during scraping: {e}")
         return []
     finally:
         if driver:
+            dagster_logger.info("Closing Chrome driver...")
             driver.quit()
+
+
+def extract_program_data_basic(card) -> Dict:
+    """Extract basic program data from a single program card WITHOUT fetching detailed information."""
+    try:
+        if card is None:
+            return None
+
+        # Extract basic info from card
+        name_element = card.find("h3", class_="adea-pgrm__title__heading")
+        name = (
+            name_element.find("a").text.strip()
+            if name_element and name_element.find("a")
+            else ""
+        )
+
+        # Extract state
+        meta_list = card.find("ul", class_="adea-pgram__title__meta")
+        state = ""
+        if meta_list:
+            state_li = meta_list.find("li")
+            state = state_li.text.strip() if state_li else ""
+
+        # Extract program type
+        program_type = ""
+        if meta_list:
+            badge = meta_list.find("span", class_="ui-badge")
+            if badge:
+                program_type = badge.find("span", class_="ui-badge__text").text.strip()
+
+        # Extract ADEA URL
+        adea_url = ""
+        if name_element and name_element.find("a"):
+            href = name_element.find("a").get("href")
+            if href:
+                adea_url = f"https://programs.adea.org{href}"
+
+        # Extract basic program details from the info table
+        info_table = card.find("div", class_="adea-pgrm__info")
+        application_deadline = ""
+        start_date = ""
+
+        if info_table:
+            rows = info_table.find_all("div", class_="adea-pgrm__info__row")
+            for row in rows:
+                header = row.find("div", class_="adea-pgrm__info__col--header")
+                value = row.find("div", class_="adea-pgrm__info__col--value")
+
+                if header and value:
+                    header_text = header.text.strip()
+                    value_text = value.text.strip()
+
+                    if header_text == "Application Deadline":
+                        application_deadline = value_text
+                    elif header_text == "Program Start":
+                        start_date = value_text
+
+        # Return basic info without detailed info
+        result = {
+            "name": name,
+            "state": state,
+            "type": program_type,
+            "url": "",
+            "adea_url": adea_url,
+            "application_deadline": application_deadline,
+            "start_date": start_date,
+            "last_updated": "",
+            "description": "",
+            "information": {},
+            "requirements": [],
+            "contact": {},
+        }
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error extracting basic program data from card: {e}")
+        return None
+
+
+def fetch_detailed_info_concurrent(
+    programs: List[Dict], max_workers: int = 20
+) -> List[Dict]:
+    """Fetch detailed information for all programs using concurrent requests."""
+    dagster_logger = get_dagster_logger()
+
+    dagster_logger.info(
+        f"Fetching detailed information for {len(programs)} programs with {max_workers} workers"
+    )
+
+    def fetch_single_program_details(program):
+        """Fetch detailed info for a single program."""
+        try:
+            adea_url = program.get("adea_url", "")
+            if not adea_url:
+                return program
+
+            detailed_info = fetch_detailed_program_info(adea_url)
+
+            # Merge detailed info with basic info
+            program.update(
+                {
+                    "url": detailed_info.get("website_url", ""),
+                    "last_updated": detailed_info.get("last_updated", ""),
+                    "description": detailed_info.get("description", ""),
+                    "information": detailed_info.get("information", {}),
+                    "requirements": detailed_info.get("requirements", []),
+                    "contact": detailed_info.get("contact", {}),
+                }
+            )
+
+            return program
+        except Exception as e:
+            dagster_logger.error(
+                f"Error fetching detailed info for {program.get('name', 'Unknown')}: {e}"
+            )
+            return program
+
+    # Use ThreadPoolExecutor for concurrent requests
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        dagster_logger.info("Submitting detailed info fetch tasks to thread pool...")
+        future_to_program = {
+            executor.submit(fetch_single_program_details, program): program
+            for program in programs
+        }
+
+        # Collect results with progress tracking
+        results = []
+        completed = 0
+        total = len(programs)
+
+        for future in as_completed(future_to_program):
+            try:
+                result = future.result()
+                results.append(result)
+                completed += 1
+
+                if completed % 50 == 0 or completed == total:
+                    dagster_logger.info(
+                        f"Progress: {completed}/{total} programs processed ({completed / total * 100:.1f}%)"
+                    )
+
+            except Exception as e:
+                dagster_logger.error(f"Error processing program: {e}")
+                # Add the original program if detailed fetching failed
+                results.append(future_to_program[future])
+
+    dagster_logger.info(
+        f"Completed fetching detailed information for {len(results)} programs"
+    )
+    return results
 
 
 def extract_program_data(card) -> Dict:
@@ -149,11 +335,14 @@ def extract_program_data(card) -> Dict:
 
 def fetch_detailed_program_info(adea_url: str) -> Dict:
     """Fetch detailed program information from the program detail page."""
+    dagster_logger = get_dagster_logger()
+
     try:
         if not adea_url:
             return {}
 
         # Make HTTP request to get detailed program page
+        dagster_logger.debug(f"Fetching detailed info from: {adea_url}")
         response = requests.get(adea_url, timeout=30)
         response.raise_for_status()
 
@@ -275,7 +464,9 @@ def fetch_detailed_program_info(adea_url: str) -> Dict:
         return result
 
     except Exception as e:
-        logger.error(f"Error fetching detailed program info from {adea_url}: {e}")
+        dagster_logger.error(
+            f"Error fetching detailed program info from {adea_url}: {e}"
+        )
         return {}
 
 

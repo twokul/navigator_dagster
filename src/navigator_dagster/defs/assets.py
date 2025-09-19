@@ -62,14 +62,22 @@ def adea_pass_programs_website_check(mongodb: MongoDBResource) -> dg.AssetCheckR
 
     row_count = collection.count_documents({})
 
-    if row_count == 0:
+    # based on the number of programs in the ADEA PASS website
+    if row_count != 808:
         return dg.AssetCheckResult(
             passed=False,
-            metadata={"message": "ADEA PASS programs website check failed"},
+            metadata={
+                "message": "ADEA PASS programs website check failed",
+                "row_count": row_count,
+            },
         )
 
     return dg.AssetCheckResult(
-        passed=True, metadata={"message": "ADEA PASS programs website check passed"}
+        passed=True,
+        metadata={
+            "message": "ADEA PASS programs website check passed",
+            "row_count": row_count,
+        },
     )
 
 
@@ -79,14 +87,22 @@ def adea_caapid_programs_website_check(mongodb: MongoDBResource) -> dg.AssetChec
 
     row_count = collection.count_documents({})
 
-    if row_count == 0:
+    # based on the number of programs in the ADEA CAAPID website
+    if row_count != 43:
         return dg.AssetCheckResult(
             passed=False,
-            metadata={"message": "ADEA PASS programs website check failed"},
+            metadata={
+                "message": "ADEA PASS programs website check failed",
+                "row_count": row_count,
+            },
         )
 
     return dg.AssetCheckResult(
-        passed=True, metadata={"message": "ADEA PASS programs website check passed"}
+        passed=True,
+        metadata={
+            "message": "ADEA PASS programs website check passed",
+            "row_count": row_count,
+        },
     )
 
 
@@ -111,7 +127,8 @@ def sdn_dental_schools_website_check(mongodb: MongoDBResource) -> dg.AssetCheckR
 
     row_count = collection.count_documents({})
 
-    if row_count == 0:
+    # based on the number of schools in the SDN dental schools website
+    if row_count != 86:
         return dg.AssetCheckResult(
             passed=False,
             metadata={"message": "SDN dental schools website check failed"},

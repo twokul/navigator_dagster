@@ -424,19 +424,22 @@ def create_dental_programs_collection(mongodb: MongoDBResource) -> Dict[str, Any
                 merged_programs.append(standalone_program)
                 unmatched_sdn_count += 1
 
-        # Insert merged programs into the new collection
+        # Insert merged programs into the new collection with deduplication
         if merged_programs:
-            result = dental_programs_collection.insert_many(merged_programs)
+            # Use deduplication logic to avoid duplicates
+            result = upsert_dental_programs(mongodb, merged_programs)
 
             logger.info(
                 f"Successfully created dental_programs collection with {len(merged_programs)} programs"
             )
 
             return {
-                "status": "success",
-                "message": f"Successfully created dental_programs collection with {len(merged_programs)} programs",
-                "count": len(merged_programs),
-                "inserted_ids": len(result.inserted_ids),
+                "status": result["status"],
+                "message": result["message"],
+                "count": result["total_processed"],
+                "inserted": result["inserted"],
+                "updated": result["updated"],
+                "skipped": result["skipped"],
                 "pass_programs_count": len(pass_programs),
                 "caapid_programs_count": len(caapid_programs),
                 "sdn_programs_count": len(sdn_programs),
@@ -707,3 +710,273 @@ def get_sdn_dental_schools_count(mongodb: MongoDBResource) -> int:
     except Exception as e:
         logger.error(f"Error getting sdn_dental_schools count: {e}")
         return 0
+
+
+def upsert_adea_programs(
+    mongodb: MongoDBResource, programs: List[Dict[str, Any]], collection_name: str
+) -> Dict[str, Any]:
+    """
+    Upsert ADEA programs to avoid duplicates based on name, type, and state combination.
+
+    Args:
+        mongodb: MongoDB resource instance
+        programs: List of program dictionaries to upsert
+        collection_name: Name of the collection to upsert to
+
+    Returns:
+        Dict containing operation results with counts of inserted, updated, and skipped programs
+    """
+    from dagster import get_dagster_logger
+
+    dagster_logger = get_dagster_logger()
+
+    try:
+        collection = mongodb.get_collection(collection_name)
+
+        inserted_count = 0
+        updated_count = 0
+        skipped_count = 0
+        duplicate_count = 0
+
+        dagster_logger.info(
+            f"Starting upsert process for {len(programs)} programs in {collection_name}"
+        )
+
+        # Log first few programs to verify data structure
+        dagster_logger.info("Sample programs being processed:")
+        for i, program in enumerate(programs[:3]):
+            dagster_logger.info(
+                f"  Program {i + 1}: {program.get('name', 'N/A')} ({program.get('type', 'N/A')}, {program.get('state', 'N/A')})"
+            )
+
+        for i, program in enumerate(programs):
+            # Extract the unique identifier fields
+            name = program.get("name", "").strip()
+            program_type = program.get("type", "").strip()
+            state = program.get("state", "").strip()
+
+            if not name or not program_type or not state:
+                dagster_logger.warning(
+                    f"Skipping program {i + 1}/{len(programs)} with missing required fields - Name: '{name}', Type: '{program_type}', State: '{state}'"
+                )
+                skipped_count += 1
+                continue
+
+            # Create query to find existing program using more specific fields
+            # Include program size and length to distinguish between different programs from same institution
+            program_size = program.get("information", {}).get("size", "").strip()
+            program_length = program.get("information", {}).get("length", "").strip()
+
+            # Use ADEA URL as primary unique identifier since it's most specific
+            adea_url = program.get("adea_url", "").strip()
+
+            if adea_url:
+                # Use ADEA URL as the primary unique identifier
+                query = {"adea_url": adea_url}
+            else:
+                # Fallback to name + type + state + size + length for programs without ADEA URL
+                query = {
+                    "name": name,
+                    "type": program_type,
+                    "state": state,
+                    "information.size": program_size,
+                    "information.length": program_length,
+                }
+
+            # Check if program already exists
+            existing_program = collection.find_one(query)
+
+            if existing_program:
+                # This is a duplicate - log detailed information
+                duplicate_count += 1
+                dagster_logger.warning(
+                    f"DUPLICATE FOUND #{duplicate_count}: {name} ({program_type}, {state})"
+                )
+                dagster_logger.info(
+                    f"  Existing program ID: {existing_program.get('_id')}"
+                )
+                dagster_logger.info(
+                    f"  Existing program ADEA URL: {existing_program.get('adea_url', 'N/A')}"
+                )
+                dagster_logger.info(
+                    f"  New program ADEA URL: {program.get('adea_url', 'N/A')}"
+                )
+
+                # Check if URLs are different (this would indicate a real issue)
+                existing_url = existing_program.get("adea_url", "")
+                new_url = program.get("adea_url", "")
+                if existing_url != new_url:
+                    dagster_logger.error(
+                        f"  ⚠️  DIFFERENT URLs for same program! Existing: {existing_url}, New: {new_url}"
+                    )
+
+                # Update existing program with new data
+                # Remove _id from program data to avoid conflicts
+                program_data = {k: v for k, v in program.items() if k != "_id"}
+
+                result = collection.update_one(query, {"$set": program_data})
+
+                if result.modified_count > 0:
+                    updated_count += 1
+                    dagster_logger.info(
+                        f"  ✅ Updated existing program: {name} ({program_type}, {state})"
+                    )
+                else:
+                    skipped_count += 1
+                    dagster_logger.info(
+                        f"  ⏭️  No changes needed for program: {name} ({program_type}, {state})"
+                    )
+            else:
+                # Insert new program
+                result = collection.insert_one(program)
+                if result.inserted_id:
+                    inserted_count += 1
+                    if (i + 1) % 100 == 0 or i == len(programs) - 1:
+                        dagster_logger.info(
+                            f"Inserted new program {i + 1}/{len(programs)}: {name} ({program_type}, {state})"
+                        )
+                else:
+                    skipped_count += 1
+                    dagster_logger.warning(
+                        f"Failed to insert program: {name} ({program_type}, {state})"
+                    )
+
+        dagster_logger.info(
+            f"Upsert completed - Inserted: {inserted_count}, Updated: {updated_count}, Skipped: {skipped_count}, Duplicates: {duplicate_count}"
+        )
+
+        return {
+            "status": "success",
+            "message": f"Upserted {len(programs)} programs to {collection_name}",
+            "total_processed": len(programs),
+            "inserted": inserted_count,
+            "updated": updated_count,
+            "skipped": skipped_count,
+            "duplicates": duplicate_count,
+            "collection_name": collection_name,
+        }
+
+    except Exception as e:
+        dagster_logger.error(f"Error upserting programs to {collection_name}: {e}")
+        return {
+            "status": "error",
+            "message": f"Error upserting programs to {collection_name}: {str(e)}",
+            "total_processed": len(programs) if programs else 0,
+            "inserted": 0,
+            "updated": 0,
+            "skipped": 0,
+            "duplicates": 0,
+            "collection_name": collection_name,
+        }
+
+
+def upsert_dental_programs(
+    mongodb: MongoDBResource, programs: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """
+    Upsert dental programs to avoid duplicates based on name, type, and state combination.
+    This function is specifically for the merged dental_programs collection.
+
+    Args:
+        mongodb: MongoDB resource instance
+        programs: List of program dictionaries to upsert
+
+    Returns:
+        Dict containing operation results with counts of inserted, updated, and skipped programs
+    """
+    try:
+        collection = mongodb.get_collection("dental_programs")
+
+        inserted_count = 0
+        updated_count = 0
+        skipped_count = 0
+
+        for program in programs:
+            # Extract the unique identifier fields
+            name = program.get("name", "").strip()
+            program_type = program.get("type", "").strip()
+            state = program.get("state", "").strip()
+
+            if not name or not program_type or not state:
+                logger.warning(
+                    f"Skipping program with missing required fields: {program}"
+                )
+                skipped_count += 1
+                continue
+
+            # Create query to find existing program using more specific fields
+            # Include program size and length to distinguish between different programs from same institution
+            program_size = program.get("information", {}).get("size", "").strip()
+            program_length = program.get("information", {}).get("length", "").strip()
+
+            # Use ADEA URL as primary unique identifier since it's most specific
+            adea_url = program.get("adea_url", "").strip()
+
+            if adea_url:
+                # Use ADEA URL as the primary unique identifier
+                query = {"adea_url": adea_url}
+            else:
+                # Fallback to name + type + state + size + length for programs without ADEA URL
+                query = {
+                    "name": name,
+                    "type": program_type,
+                    "state": state,
+                    "information.size": program_size,
+                    "information.length": program_length,
+                }
+
+            # Check if program already exists
+            existing_program = collection.find_one(query)
+
+            if existing_program:
+                # Update existing program with new data
+                # Remove _id from program data to avoid conflicts
+                program_data = {k: v for k, v in program.items() if k != "_id"}
+
+                result = collection.update_one(query, {"$set": program_data})
+
+                if result.modified_count > 0:
+                    updated_count += 1
+                    logger.info(
+                        f"Updated existing dental program: {name} ({program_type}, {state})"
+                    )
+                else:
+                    skipped_count += 1
+                    logger.info(
+                        f"No changes needed for dental program: {name} ({program_type}, {state})"
+                    )
+            else:
+                # Insert new program
+                result = collection.insert_one(program)
+                if result.inserted_id:
+                    inserted_count += 1
+                    logger.info(
+                        f"Inserted new dental program: {name} ({program_type}, {state})"
+                    )
+                else:
+                    skipped_count += 1
+                    logger.warning(
+                        f"Failed to insert dental program: {name} ({program_type}, {state})"
+                    )
+
+        return {
+            "status": "success",
+            "message": f"Upserted {len(programs)} programs to dental_programs",
+            "total_processed": len(programs),
+            "inserted": inserted_count,
+            "updated": updated_count,
+            "skipped": skipped_count,
+            "collection_name": "dental_programs",
+        }
+
+    except Exception as e:
+        logger.error(f"Error upserting dental programs: {e}")
+        return {
+            "status": "error",
+            "message": f"Error upserting dental programs: {str(e)}",
+            "total_processed": len(programs) if programs else 0,
+            "inserted": 0,
+            "updated": 0,
+            "skipped": 0,
+            "collection_name": "dental_programs",
+        }

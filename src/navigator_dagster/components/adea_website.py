@@ -1,6 +1,7 @@
 import dagster as dg
 from ..defs.resources import MongoDBResource
 from ..defs.utils import scrape_adea_programs
+from ..defs.mongo_utils import upsert_adea_programs
 
 
 class ETL(dg.Model):
@@ -17,34 +18,40 @@ class AdeaWebsite(dg.Component, dg.Model, dg.Resolvable):
         assets = []
 
         for etl in self.steps:
+            # Create a factory function to avoid closure issues
+            def create_asset(etl_step):
+                @dg.asset(
+                    name=etl_step.name,
+                    description=etl_step.description,
+                )
+                def _collection(mongodb: MongoDBResource):
+                    programs = scrape_adea_programs(etl_step.url)
 
-            @dg.asset(
-                name=etl.name,
-                description=etl.description,
-            )
-            def _collection(mongodb: MongoDBResource):
-                programs = scrape_adea_programs(etl.url)
+                    if not programs:
+                        return {
+                            "status": "error",
+                            "message": "No programs scraped",
+                            "count": 0,
+                        }
 
-                if not programs:
+                    # Use upsert to avoid duplicates based on name, type, and state
+                    result = upsert_adea_programs(
+                        mongodb, programs, etl_step.collection_name
+                    )
+
                     return {
-                        "status": "error",
-                        "message": "No programs scraped",
-                        "count": 0,
+                        "status": result["status"],
+                        "message": result["message"],
+                        "total_processed": result["total_processed"],
+                        "inserted": result["inserted"],
+                        "updated": result["updated"],
+                        "skipped": result["skipped"],
+                        "collection_name": result["collection_name"],
                     }
 
-                # Get the MongoDB collection
-                collection = mongodb.get_collection(etl.collection_name)
+                return _collection
 
-                result = collection.insert_many(programs)
-
-                return {
-                    "status": "success",
-                    "message": f"Successfully scraped and stored {len(programs)} programs",
-                    "count": len(programs),
-                    "inserted_ids": len(result.inserted_ids),
-                }
-
-            assets.append(_collection)
+            assets.append(create_asset(etl))
 
         return dg.Definitions(
             assets=assets,
