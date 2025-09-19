@@ -24,20 +24,35 @@ def dental_programs_check(mongodb: MongoDBResource) -> dg.AssetCheckResult:
     collection = mongodb.get_collection("dental_programs")
     adea_pass_collection = mongodb.get_collection("adea_pass_programs")
     adea_caapid_collection = mongodb.get_collection("adea_caapid_programs")
+    sdn_collection = mongodb.get_collection("sdn_dental_schools")
 
     adea_pass_row_count = adea_pass_collection.count_documents({})
     adea_caapid_row_count = adea_caapid_collection.count_documents({})
+    sdn_row_count = sdn_collection.count_documents({})
     row_count = collection.count_documents({})
     sum_row_count = adea_pass_row_count + adea_caapid_row_count
 
     if row_count == 0 or row_count != sum_row_count:
         return dg.AssetCheckResult(
             passed=False,
-            metadata={"message": "Dental programs check failed"},
+            metadata={
+                "message": "Dental programs check failed - missing ADEA programs",
+                "dental_programs_count": row_count,
+                "adea_pass_count": adea_pass_row_count,
+                "adea_caapid_count": adea_caapid_row_count,
+                "sdn_count": sdn_row_count,
+            },
         )
 
     return dg.AssetCheckResult(
-        passed=True, metadata={"message": "Dental programs check passed"}
+        passed=True,
+        metadata={
+            "message": "Dental programs check passed",
+            "dental_programs_count": row_count,
+            "adea_pass_count": adea_pass_row_count,
+            "adea_caapid_count": adea_caapid_row_count,
+            "sdn_count": sdn_row_count,
+        },
     )
 
 
