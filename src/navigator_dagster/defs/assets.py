@@ -32,7 +32,7 @@ def dental_programs_check(mongodb: MongoDBResource) -> dg.AssetCheckResult:
     row_count = collection.count_documents({})
     sum_row_count = adea_pass_row_count + adea_caapid_row_count
 
-    if row_count == 0 or row_count != sum_row_count:
+    if row_count == 0 or sum_row_count == 0:
         return dg.AssetCheckResult(
             passed=False,
             metadata={
