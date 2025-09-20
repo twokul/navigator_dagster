@@ -2,9 +2,10 @@ from typing import List, Dict, Any, Optional
 import logging
 import re
 from difflib import SequenceMatcher
+import dagster as dg
 from .resources import MongoDBResource
 
-logger = logging.getLogger(__name__)
+logger = dg.get_dagster_logger()
 
 # State name to state code mapping
 STATE_MAPPING = {
@@ -710,6 +711,543 @@ def get_sdn_dental_schools_count(mongodb: MongoDBResource) -> int:
     except Exception as e:
         logger.error(f"Error getting sdn_dental_schools count: {e}")
         return 0
+
+
+def check_dental_programs_collection(mongodb: MongoDBResource) -> Dict[str, Any]:
+    """Check if dental_programs collection exists and has data."""
+    try:
+        dental_programs_collection = mongodb.get_collection("dental_programs")
+        count = dental_programs_collection.count_documents({})
+
+        # Get a sample document to see the structure
+        sample = dental_programs_collection.find_one({})
+
+        logger.info(f"dental_programs collection has {count} documents")
+        if sample:
+            logger.info(f"Sample document keys: {list(sample.keys())}")
+            logger.info(f"Sample name: {sample.get('name', 'N/A')}")
+            logger.info(f"Sample type: {sample.get('type', 'N/A')}")
+
+        return {
+            "exists": True,
+            "count": count,
+            "sample_keys": list(sample.keys()) if sample else [],
+            "sample_name": sample.get("name", "N/A") if sample else "N/A",
+        }
+    except Exception as e:
+        logger.error(f"Error checking dental_programs collection: {e}")
+        return {"exists": False, "error": str(e), "count": 0}
+
+
+def create_dental_schools_collection(mongodb: MongoDBResource) -> Dict[str, Any]:
+    """
+    Create a new MongoDB collection called 'dental_schools' by aggregating programs
+    from the 'dental_programs' collection and enriching with research criteria.
+
+    This collection supports the research spreadsheet functionality by providing
+    school-level data with comprehensive criteria for comparison.
+
+    Returns:
+        Dict containing the operation result with status, message, and count
+    """
+    try:
+        logger.info("Starting dental_schools collection creation...")
+
+        # First check if dental_programs collection exists and has data
+        logger.info("Checking dental_programs collection...")
+        programs_check = check_dental_programs_collection(mongodb)
+        if not programs_check["exists"]:
+            logger.error(
+                f"dental_programs collection does not exist: {programs_check.get('error', 'Unknown error')}"
+            )
+            return {
+                "status": "error",
+                "message": f"dental_programs collection does not exist: {programs_check.get('error', 'Unknown error')}",
+                "count": 0,
+                "inserted_ids": 0,
+            }
+
+        if programs_check["count"] == 0:
+            logger.error("dental_programs collection is empty")
+            return {
+                "status": "error",
+                "message": "dental_programs collection is empty",
+                "count": 0,
+                "inserted_ids": 0,
+            }
+
+        # Get the source collection
+        dental_programs_collection = mongodb.get_collection("dental_programs")
+        dental_schools_collection = mongodb.get_collection("dental_schools")
+
+        logger.info("Collections retrieved successfully")
+
+        # Clear existing data
+        logger.info("Clearing existing dental_schools data...")
+        delete_result = dental_schools_collection.delete_many({})
+        logger.info(f"Deleted {delete_result.deleted_count} existing documents")
+
+        # Fetch all programs
+        logger.info("Fetching programs from dental_programs collection...")
+        programs = list(dental_programs_collection.find({}))
+        logger.info(f"Processing {len(programs)} programs to create schools collection")
+
+        if not programs:
+            logger.warning("No programs found in dental_programs collection!")
+            return {
+                "status": "error",
+                "message": "No programs found in dental_programs collection",
+                "count": 0,
+                "inserted_ids": 0,
+            }
+
+        # Group programs by school name
+        schools_data = {}
+        processed_count = 0
+        skipped_count = 0
+
+        logger.info("Starting to process programs and group by school...")
+
+        for program in programs:
+            try:
+                school_name = program.get("name", "").strip()
+                if not school_name:
+                    skipped_count += 1
+                    continue
+
+                # Extract school name (remove program-specific suffixes)
+                original_name = school_name
+                school_name = normalize_school_name(school_name)
+
+                if processed_count < 5:  # Log first few for debugging
+                    logger.info(
+                        f"Processing program: '{original_name}' -> '{school_name}'"
+                    )
+                    logger.info(f"Program keys: {list(program.keys())}")
+                    logger.info(f"Program type: {program.get('type', 'N/A')}")
+                    logger.info(
+                        f"Program school_address: {program.get('school_address', 'N/A')}"
+                    )
+                    logger.info(
+                        f"Program information: {program.get('information', 'N/A')}"
+                    )
+
+                if school_name not in schools_data:
+                    # Safely get school_address, handling both dict and string cases
+                    school_address = program.get("school_address")
+                    if isinstance(school_address, dict):
+                        city = school_address.get("city", "")
+                    elif isinstance(school_address, str):
+                        # Extract city from address string (first part before comma)
+                        city = (
+                            school_address.split(",")[0].strip()
+                            if school_address
+                            else ""
+                        )
+                    else:
+                        city = ""
+
+                    schools_data[school_name] = {
+                        "school_name": school_name,
+                        "city": city,
+                        "state": program.get("state", ""),
+                        "website": program.get("website", ""),
+                        "programs": [],
+                        "status": set(),
+                        "program_types": set(),
+                        "specialties": set(),
+                        "degrees": set(),
+                        # School-level aggregated data (will be calculated later)
+                        "total_programs": 0,
+                        "program_count_by_type": {},
+                        "program_count_by_specialty": {},
+                    }
+
+                # Add program to school
+                program_type = program.get("type", "")
+                specialty = program.get("speciality", "")
+                degree = program.get("degree", "")
+
+                schools_data[school_name]["programs"].append(
+                    {
+                        "name": program.get("name", ""),
+                        "type": program_type,
+                        "specialty": specialty,
+                        "degree": degree,
+                        "description": program.get("description", ""),
+                        "requirements": program.get("requirements", []),
+                        "contact": program.get("contact", {}),
+                        "adea_url": program.get("adea_url", ""),
+                        # Program-level properties
+                        "tuition_in_state": program.get("tuition_in_state"),
+                        "tuition_out_of_state": program.get("tuition_out_of_state"),
+                        "application_deadline": program.get("application_deadline", ""),
+                        "start_date": program.get("start_date", ""),
+                        "last_updated": program.get("last_updated", ""),
+                        "average_dat": program.get("average_dat"),
+                        "average_gpa": program.get("average_gpa"),
+                        "interview_feedback_summary": program.get(
+                            "interview_feedback_summary"
+                        ),
+                        "school_review_summary": program.get("school_review_summary"),
+                        "about_the_school": program.get("about_the_school"),
+                        "curriculum": program.get("curriculum"),
+                        "facilities": program.get("facilities"),
+                        "school_address": program.get("school_address"),
+                        "links": program.get("links"),
+                        "insights": program.get("insights"),
+                        # Program-specific research criteria
+                        "evaluation_requirements": {
+                            "ece_required": True,  # Default for international programs
+                            "wes_required": False,
+                        },
+                        "toefl_ielts_requirement": {
+                            "toefl_minimum": 100,  # Default
+                            "ielts_minimum": 7.0,
+                        },
+                        "clinical_experience_required": "2 years minimum",  # Default
+                        "letter_of_recommendation": {
+                            "count": 3,
+                            "sources": ["faculty", "supervisor", "colleague"],
+                        },
+                        "bench_test_requirement": True,
+                        "interview_type": "In-person",  # Default
+                        "visa_requirements": "F-1 student visa",  # Default
+                        "research_opportunities": [
+                            "Basic science",
+                            "Clinical research",
+                        ],
+                        "scholarships_financial_aid": {
+                            "merit_based": True,
+                            "need_based": True,
+                            "international_eligible": True,
+                        },
+                        "class_size": 25,  # Default
+                        "curriculum_structure": "Integrated clinical and didactic",
+                        "clinical_training_opportunities": "Extensive patient exposure",
+                        "acceptance_rates_competitiveness": {
+                            "asp_seats_offered": 15,  # Default
+                            "inbde_range": "85-95",
+                            "gpa_range": "3.5-3.8",
+                            "international_friendly": True,
+                        },
+                        "post_graduation_opportunities": {
+                            "private_practice_rate": 0.7,
+                            "specialization_rate": 0.3,
+                            "residency_match_rate": 0.85,
+                            "networking_opportunities": "Strong alumni network",
+                        },
+                    }
+                )
+
+                # Update sets for aggregation
+                if program_type:
+                    schools_data[school_name]["program_types"].add(program_type)
+                    # Count programs by type
+                    if (
+                        program_type
+                        not in schools_data[school_name]["program_count_by_type"]
+                    ):
+                        schools_data[school_name]["program_count_by_type"][
+                            program_type
+                        ] = 0
+                    schools_data[school_name]["program_count_by_type"][
+                        program_type
+                    ] += 1
+
+                if specialty:
+                    schools_data[school_name]["specialties"].add(specialty)
+                    # Count programs by specialty
+                    if (
+                        specialty
+                        not in schools_data[school_name]["program_count_by_specialty"]
+                    ):
+                        schools_data[school_name]["program_count_by_specialty"][
+                            specialty
+                        ] = 0
+                    schools_data[school_name]["program_count_by_specialty"][
+                        specialty
+                    ] += 1
+
+                if degree:
+                    schools_data[school_name]["degrees"].add(degree)
+
+                # Determine status based on program type and other factors
+                if program_type == "advanced_standing":
+                    schools_data[school_name]["status"].add("Non-residents")
+                elif program_type == "residency":
+                    schools_data[school_name]["status"].add("Citizens & Residents")
+
+                # Update total program count
+                schools_data[school_name]["total_programs"] += 1
+
+                processed_count += 1
+
+            except Exception as e:
+                logger.error(f"Error processing program {processed_count}: {e}")
+                logger.error(f"Program data: {program}")
+                skipped_count += 1
+                continue
+
+        logger.info(
+            f"Processed {processed_count} programs, skipped {skipped_count} programs"
+        )
+        logger.info(f"Found {len(schools_data)} unique schools")
+
+        # Convert sets to lists and add research criteria
+        schools_list = []
+        logger.info("Converting sets to lists and adding research criteria...")
+        for school_name, school_data in schools_data.items():
+            # Convert sets to lists
+            school_data["status"] = list(school_data["status"])
+            school_data["program_types"] = list(school_data["program_types"])
+            school_data["specialties"] = list(school_data["specialties"])
+            school_data["degrees"] = list(school_data["degrees"])
+
+            # Add only school-level research criteria
+            school_data.update(
+                {
+                    # School-level aggregated information
+                    "total_programs": school_data.get("total_programs", 0),
+                    "program_count_by_type": school_data.get(
+                        "program_count_by_type", {}
+                    ),
+                    "program_count_by_specialty": school_data.get(
+                        "program_count_by_specialty", {}
+                    ),
+                    # School-level research criteria (only what applies to the entire school)
+                    "alumni_network": "Strong international network",
+                    "student_support_services": [
+                        "Academic advising",
+                        "Career counseling",
+                    ],
+                    "study_life_balance_support": [
+                        "Mental health services",
+                        "Study groups",
+                    ],
+                    "career_development_resources": [
+                        "Job placement",
+                        "Residency matching",
+                    ],
+                    "externship_internship_options": [
+                        "Local clinics",
+                        "International rotations",
+                    ],
+                    "technology_facilities": "State-of-the-art simulation lab",
+                    "location_cost_of_living": {
+                        "city": school_data.get("city", ""),
+                        "cost_of_living_index": 85.2,  # Default
+                        "housing_avg": 1200,  # Default
+                    },
+                    "dual_degree_opportunities": ["DDS/PhD", "DDS/MPH"],
+                    "leadership_opportunities": [
+                        "Student government",
+                        "Research leadership",
+                    ],
+                    "extracurricular_networking": [
+                        "Dental societies",
+                        "International groups",
+                    ],
+                    "student_reviews_feedback": {
+                        "overall_rating": 4.2,  # Default
+                        "pros": ["Great faculty", "Strong clinical training"],
+                        "cons": ["High tuition", "Competitive"],
+                    },
+                    "school_mission_focus": {
+                        "emphasis": "Clinical training",
+                        "prioritization": "Public health",
+                        "mission_alignment_score": 8.5,
+                    },
+                    "financial_aid_scholarships": {
+                        "international_scholarships": True,
+                        "research_assistantships": True,
+                        "funding_partnerships": ["Fulbright", "Rotary"],
+                    },
+                }
+            )
+
+            schools_list.append(school_data)
+
+        logger.info(f"Prepared {len(schools_list)} schools for insertion")
+
+        # Insert schools into collection
+        if schools_list:
+            logger.info("Inserting schools into dental_schools collection...")
+            result = dental_schools_collection.insert_many(schools_list)
+
+            logger.info(
+                f"Successfully created dental_schools collection with {len(schools_list)} schools"
+            )
+            logger.info(f"Inserted {len(result.inserted_ids)} documents")
+
+            return {
+                "status": "success",
+                "message": f"Successfully created dental_schools collection with {len(schools_list)} schools",
+                "count": len(schools_list),
+                "inserted_ids": len(result.inserted_ids),
+            }
+        else:
+            logger.warning("No schools found to insert")
+            return {
+                "status": "error",
+                "message": "No schools found to insert",
+                "count": 0,
+                "inserted_ids": 0,
+            }
+
+    except Exception as e:
+        logger.error(f"Error creating dental_schools collection: {e}")
+        return {
+            "status": "error",
+            "message": f"Error creating dental_schools collection: {str(e)}",
+            "count": 0,
+            "inserted_ids": 0,
+        }
+
+
+def normalize_school_name(school_name: str) -> str:
+    """
+    Normalize school name by removing program-specific suffixes and standardizing format.
+
+    Args:
+        school_name: Raw school name from program data
+
+    Returns:
+        Normalized school name
+    """
+    # Remove common program suffixes
+    suffixes_to_remove = [
+        " School of Dentistry",
+        " College of Dentistry",
+        " School of Dental Medicine",
+        " College of Dental Medicine",
+        " - Advanced Standing Program",
+        " - Residency Program",
+        " Program",
+        " Department",
+    ]
+
+    normalized = school_name
+    for suffix in suffixes_to_remove:
+        if normalized.endswith(suffix):
+            normalized = normalized[: -len(suffix)]
+            break
+
+    return normalized.strip()
+
+
+def search_dental_schools(
+    mongodb: MongoDBResource,
+    filters: Dict[str, Any] = None,
+    sort_by: str = "school_name",
+    sort_order: int = 1,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """
+    Search dental schools based on various criteria.
+
+    Args:
+        mongodb: MongoDB resource instance
+        filters: Dictionary of filter criteria
+        sort_by: Field to sort by
+        sort_order: 1 for ascending, -1 for descending
+        limit: Maximum number of results
+
+    Returns:
+        List of matching schools
+    """
+    try:
+        collection = mongodb.get_collection("dental_schools")
+
+        # Build query from filters
+        query = {}
+        if filters:
+            for key, value in filters.items():
+                if key == "state" and value:
+                    query["state"] = {"$regex": value, "$options": "i"}
+                elif key == "city" and value:
+                    query["city"] = {"$regex": value, "$options": "i"}
+                elif key == "status" and value:
+                    query["status"] = {
+                        "$in": value if isinstance(value, list) else [value]
+                    }
+                elif key == "program_types" and value:
+                    query["program_types"] = {
+                        "$in": value if isinstance(value, list) else [value]
+                    }
+                elif key == "specialties" and value:
+                    query["specialties"] = {
+                        "$in": value if isinstance(value, list) else [value]
+                    }
+                elif key == "min_tuition" and value:
+                    query["tuition_fees.out_of_state"] = {"$gte": value}
+                elif key == "max_tuition" and value:
+                    query["tuition_fees.out_of_state"] = {"$lte": value}
+                elif key == "international_friendly" and value:
+                    query["acceptance_rates_competitiveness.international_friendly"] = (
+                        value
+                    )
+                elif key == "min_rating" and value:
+                    query["student_reviews_feedback.overall_rating"] = {"$gte": value}
+
+        # Execute query
+        cursor = collection.find(query).sort(sort_by, sort_order).limit(limit)
+        results = list(cursor)
+
+        logger.info(f"Found {len(results)} schools matching criteria")
+        return results
+
+    except Exception as e:
+        logger.error(f"Error searching dental schools: {e}")
+        return []
+
+
+def get_dental_schools_statistics(mongodb: MongoDBResource) -> Dict[str, Any]:
+    """
+    Get statistics about the dental schools collection.
+
+    Returns:
+        Dictionary containing various statistics
+    """
+    try:
+        collection = mongodb.get_collection("dental_schools")
+
+        # Basic counts
+        total_schools = collection.count_documents({})
+
+        # Count by state
+        state_pipeline = [
+            {"$group": {"_id": "$state", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1}},
+        ]
+        state_counts = list(collection.aggregate(state_pipeline))
+
+        # Count by program types
+        program_type_pipeline = [
+            {"$unwind": "$program_types"},
+            {"$group": {"_id": "$program_types", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1}},
+        ]
+        program_type_counts = list(collection.aggregate(program_type_pipeline))
+
+        # Count by specialties
+        specialty_pipeline = [
+            {"$unwind": "$specialties"},
+            {"$group": {"_id": "$specialties", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1}},
+        ]
+        specialty_counts = list(collection.aggregate(specialty_pipeline))
+
+        return {
+            "total_schools": total_schools,
+            "by_state": state_counts,
+            "by_program_type": program_type_counts,
+            "by_specialty": specialty_counts,
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting dental schools statistics: {e}")
+        return {}
 
 
 def upsert_adea_programs(

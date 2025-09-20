@@ -3,8 +3,12 @@ from .resources import MongoDBResource
 from .mongo_utils import (
     create_dental_programs_collection,
     create_sdn_dental_schools_collection,
+    create_dental_schools_collection,
+    get_dental_schools_statistics,
 )
 from .utils import scrape_sdn_dental_schools
+
+logger = dg.get_dagster_logger()
 
 
 @dg.asset(
@@ -119,6 +123,47 @@ def sdn_dental_schools_website(mongodb: MongoDBResource):
     result = create_sdn_dental_schools_collection(mongodb, schools_data)
 
     return result
+
+
+@dg.asset(
+    deps=["dental_programs"],
+    description="Dental schools collection for research and comparison",
+)
+def dental_schools(mongodb: MongoDBResource):
+    logger.info("Starting dental_schools asset execution...")
+    result = create_dental_schools_collection(mongodb)
+    logger.info(f"Dental schools asset completed with result: {result}")
+    return result
+
+
+@dg.asset_check(asset="dental_schools")
+def dental_schools_check(mongodb: MongoDBResource) -> dg.AssetCheckResult:
+    """Check that dental schools collection was created successfully."""
+    try:
+        stats = get_dental_schools_statistics(mongodb)
+        school_count = stats.get("total_schools", 0)
+
+        if school_count == 0:
+            return dg.AssetCheckResult(
+                passed=False,
+                description="No schools found in dental_schools collection",
+            )
+
+        return dg.AssetCheckResult(
+            passed=True,
+            description=f"Successfully created dental_schools collection with {school_count} schools",
+            metadata={
+                "total_schools": school_count,
+                "by_state": len(stats.get("by_state", [])),
+                "by_program_type": len(stats.get("by_program_type", [])),
+                "by_specialty": len(stats.get("by_specialty", [])),
+            },
+        )
+    except Exception as e:
+        return dg.AssetCheckResult(
+            passed=False,
+            description=f"Error checking dental_schools collection: {str(e)}",
+        )
 
 
 @dg.asset_check(asset="sdn_dental_schools_website")
